@@ -31,8 +31,11 @@ class ClapPickerDialog(tk.Toplevel):
         if not plugins:
             ttk.Label(
                 self,
-                text="No CLAP plugins found.\n\nInstall a .clap plugin into "
-                     "~/.clap (Linux) or set CLAP_PATH, then try again.",
+                text="No plugins found.\n\nCLAP: install a .clap plugin into "
+                     "~/.clap (Linux) or set CLAP_PATH.\n"
+                     "VST3: install a .vst3 plugin into\n"
+                     "C:\\Program Files\\Common Files\\VST3 (Windows),\n"
+                     "~/.vst3 or /usr/lib/vst3 (Linux), then try again.",
                 padding=(10, 4)).pack(anchor="w")
         else:
             frame = ttk.Frame(self, padding=(10, 0))
@@ -46,7 +49,9 @@ class ClapPickerDialog(tk.Toplevel):
             self._list.configure(yscrollcommand=sb.set)
             for p in plugins:
                 vendor = f" -- {p['vendor']}" if p.get("vendor") else ""
-                self._list.insert("end", f"{p['name']}{vendor}")
+                fmt = p.get("format", "clap")
+                tag = " [VST3]" if fmt == "vst3" else " [CLAP]"
+                self._list.insert("end", f"{p['name']}{vendor}{tag}")
             self._list.bind("<Double-Button-1>", lambda _e: self._pick())
             self._list.selection_set(0)
 
