@@ -222,6 +222,9 @@ pub struct Engine {
     control: Arc<Control>,
     backend: Option<backend::Backend>,
     backend_desc: String,
+    /// The user's chosen audio output (host/device). `None`/`None` means
+    /// "System default". Applied whenever the backend is (re)built.
+    audio_selection: backend::AudioSelection,
     /// Open native plugin GUIs, keyed by GUI id. `PluginGui` is
     /// main-thread-only (`!Send`), so it must live here on the control
     /// thread — never in the audio graph.
@@ -345,6 +348,7 @@ impl Engine {
             control: Arc::new(Control::new()),
             backend: None,
             backend_desc: "not started".to_string(),
+            audio_selection: backend::AudioSelection::default(),
             plugin_guis: HashMap::new(),
             next_gui_id: 1,
             plugin_instances: HashMap::new(),
@@ -433,12 +437,22 @@ impl Engine {
     }
 
     pub fn play(&mut self) -> Result<(), String> {
-        if self.backend.is_none() {
+        self.play_from(0)
+    }
+
+    /// Start playback at `start_sample` (frames). Used by
+    /// [`Engine::reapply_audio_backend`] so a live device switch keeps the
+    /// musical position: the fresh audio graph renders from the same
+    /// sample instead of snapping the playhead back to zero.
+    fn play_from(&mut self, start_sample: u64) -> Result<(), String> {
+        let rebuilt = self.backend.is_none();
+        if rebuilt {
             let song_slot = self.song_slot.clone();
             let initial = self.song.clone();
             let control = self.control.clone();
             let mut sink = crate::plugins::PluginInstanceSink::new(self.plugin_events.clone());
             let mut core = AudioCore::new(song_slot, initial, self.debug.clone(), &mut sink);
+            core.sample_pos = start_sample;
             // Keep the main-thread plugin instances for state saving.
             // (Fresh registry: the graph was just rebuilt from the
             // current arrangement, so no stale entries can exist.)
@@ -446,12 +460,22 @@ impl Engine {
             let render = move |out: &mut [f32], _pos: u64| {
                 core.render_block(out, &control);
             };
-            let (backend, desc) = backend::start_backend(self.sample_rate, render)?;
+            let (backend, desc) =
+                backend::start_backend_with_selection(self.sample_rate, render, &self.audio_selection)?;
             self.backend = Some(backend);
             self.backend_desc = desc;
+            // The graph is fresh (pristine); a stale reset flag (e.g. left
+            // by stop()) must not zero the restored position on the first
+            // block. Reused-backend restarts use the flag below instead.
+            self.control.reset.store(false, Ordering::Release);
+        } else {
+            // Reusing the backend (play after stop): ask the audio thread
+            // for a full reset. render_block zeroes sample_pos there, which
+            // is correct because this path always starts at 0.
+            debug_assert_eq!(start_sample, 0);
+            self.control.reset.store(true, Ordering::Release);
         }
-        self.control.reset.store(true, Ordering::Release);
-        self.control.position.store(0, Ordering::Release);
+        self.control.position.store(start_sample, Ordering::Release);
         self.control.playing.store(true, Ordering::Release);
         Ok(())
     }
@@ -473,6 +497,91 @@ impl Engine {
 
     pub fn backend_name(&self) -> String {
         self.backend_desc.clone()
+    }
+
+    /// Every output device on every available host (for the Settings UI).
+    pub fn audio_devices(&self) -> Result<Vec<backend::AudioDevice>, String> {
+        backend::list_audio_devices()
+    }
+
+    /// Remember the user's chosen output. Takes effect on the next backend
+    /// build; call [`Engine::reapply_audio_backend`] to switch live.
+    /// `None`/`None` means "System default". The buffer-size choice is kept.
+    pub fn set_audio_selection(
+        &mut self,
+        host_id: Option<String>,
+        device_name: Option<String>,
+    ) {
+        self.audio_selection.host_id = host_id;
+        self.audio_selection.device_name = device_name;
+    }
+
+    /// Set the audio buffer size in frames (FL/LMMS "buffer length" analog).
+    /// `None` = the driver's default. Bigger = more time insurance per
+    /// block (fewer underruns) at the cost of latency. Takes effect on the
+    /// next backend build; call [`Engine::reapply_audio_backend`] to apply
+    /// live. Non-positive values are rejected.
+    pub fn set_buffer_frames(&mut self, frames: Option<u32>) -> Result<(), String> {
+        if let Some(n) = frames {
+            if n == 0 || n > 1 << 16 {
+                return Err(format!("buffer size {n} out of range 1-65536"));
+            }
+        }
+        self.audio_selection.buffer_frames = frames;
+        Ok(())
+    }
+
+    /// Live backend counters: (callbacks, max_callback_us, underruns,
+    /// block_frames). The UI turns these into FL Studio's CPU-meter metric
+    /// (max render time as % of the buffer deadline) and the underrun count.
+    pub fn backend_stats(&self) -> (u64, u64, u64, u64) {
+        use std::sync::atomic::Ordering;
+        match &self.backend {
+            Some(b) => {
+                let s = b.stats();
+                (
+                    s.callbacks.load(Ordering::Relaxed),
+                    s.max_callback_us.load(Ordering::Relaxed),
+                    s.underruns.load(Ordering::Relaxed),
+                    s.block_frames.load(Ordering::Relaxed),
+                )
+            }
+            None => (0, 0, 0, 0),
+        }
+    }
+
+    /// The currently requested output selection.
+    pub fn audio_selection(&self) -> backend::AudioSelection {
+        self.audio_selection.clone()
+    }
+
+    /// The currently requested buffer size in frames (`None` = default).
+    pub fn buffer_frames(&self) -> Option<u32> {
+        self.audio_selection.buffer_frames
+    }
+
+    /// Drop the current backend so the selected device is (re)opened.
+    ///
+    /// If the transport is playing, the backend is rebuilt immediately and
+    /// playback continues from the same position (FL Studio keeps the
+    /// transport running across a device switch; LMMS instead requires a
+    /// restart for some audio changes -- we do the friendlier thing).
+    /// If the rebuild fails, the transport is stopped rather than left in
+    /// a zombie "playing but silent" state, and the error is returned.
+    pub fn reapply_audio_backend(&mut self) -> Result<(), String> {
+        let was_playing = self.control.playing.load(Ordering::Acquire);
+        let pos = self.control.position.load(Ordering::Acquire);
+        self.backend = None;
+        if was_playing {
+            // Rebuild from the same sample so the playhead does not jump.
+            if let Err(e) = self.play_from(pos) {
+                self.control.playing.store(false, Ordering::Release);
+                return Err(e);
+            }
+        } else {
+            self.backend_desc = "audio device changed -- press Play".to_string();
+        }
+        Ok(())
     }
 
     /// Deterministic offline render of the current arrangement.

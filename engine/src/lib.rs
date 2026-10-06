@@ -915,6 +915,89 @@ impl PyEngine {
             .backend_name())
     }
 
+    /// List audio outputs as (host_id, host_name, device_name, is_default).
+    /// Never opens a stream; safe to call any time.
+    fn audio_devices(&self) -> PyResult<Vec<(String, String, String, bool)>> {
+        let devs = self
+            .inner
+            .lock()
+            .map_err(|_| err_to_py("engine lock poisoned".to_string()))?
+            .audio_devices()
+            .map_err(err_to_py)?;
+        Ok(devs
+            .into_iter()
+            .map(|d| (d.host_id, d.host_name, d.device_name, d.is_default))
+            .collect())
+    }
+
+    /// Choose the audio output. None/None = "System default".
+    /// Takes effect on the next backend build; call
+    /// `reapply_audio_backend` to switch live.
+    #[pyo3(signature = (host_id=None, device_name=None))]
+    fn set_audio_output(
+        &self,
+        host_id: Option<String>,
+        device_name: Option<String>,
+    ) -> PyResult<()> {
+        self.inner
+            .lock()
+            .map_err(|_| err_to_py("engine lock poisoned".to_string()))?
+            .set_audio_selection(host_id, device_name);
+        Ok(())
+    }
+
+    /// The currently requested output as (host_id, device_name).
+    fn audio_selection(&self) -> PyResult<(Option<String>, Option<String>)> {
+        let sel = self
+            .inner
+            .lock()
+            .map_err(|_| err_to_py("engine lock poisoned".to_string()))?
+            .audio_selection();
+        Ok((sel.host_id, sel.device_name))
+    }
+
+    /// Set the audio buffer size in frames (None = driver default).
+    /// Takes effect on the next backend build; call
+    /// `reapply_audio_backend` to apply live.
+    #[pyo3(signature = (frames=None))]
+    fn set_buffer_frames(&self, frames: Option<u32>) -> PyResult<()> {
+        self.inner
+            .lock()
+            .map_err(|_| err_to_py("engine lock poisoned".to_string()))?
+            .set_buffer_frames(frames)
+            .map_err(err_to_py)
+    }
+
+    /// The currently requested buffer size in frames (None = default).
+    fn buffer_frames(&self) -> PyResult<Option<u32>> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| err_to_py("engine lock poisoned".to_string()))?
+            .buffer_frames())
+    }
+
+    /// Live backend counters: (callbacks, max_callback_us, underruns,
+    /// block_frames). The UI renders FL Studio's CPU-meter metric from
+    /// these: max render time as a percentage of the buffer deadline.
+    fn backend_stats(&self) -> PyResult<(u64, u64, u64, u64)> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| err_to_py("engine lock poisoned".to_string()))?
+            .backend_stats())
+    }
+
+    /// Re-open the backend on the selected device. Keeps playing (position
+    /// preserved) if the transport was running.
+    fn reapply_audio_backend(&self) -> PyResult<()> {
+        self.inner
+            .lock()
+            .map_err(|_| err_to_py("engine lock poisoned".to_string()))?
+            .reapply_audio_backend()
+            .map_err(err_to_py)
+    }
+
     /// Offline deterministic render. Holds the GIL; a few loops render in
     /// tens of milliseconds, so this stays responsive for UI use.
     fn render_wav(&self, path: &str, loops: u32) -> PyResult<()> {

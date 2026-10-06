@@ -53,9 +53,38 @@ class DebugWindow(tk.Toplevel):
         main = ttk.Frame(self, padding=8)
         main.pack(fill="both", expand=True)
 
+        # -- audio performance (research topic 37: real-time overload) -----
+        # FL Studio's CPU-meter analog: max render time as a percentage of
+        # the buffer deadline, plus FL's underrun counter analog.
+        perf_frame = ttk.LabelFrame(main, text="Audio performance",
+                                    padding=6)
+        perf_frame.pack(fill="x")
+        self._perf_backend = ttk.Label(perf_frame, text="Backend: -",
+                                       font=("", 9))
+        self._perf_backend.pack(anchor="w")
+        perf_row = ttk.Frame(perf_frame)
+        perf_row.pack(fill="x", pady=(2, 0))
+        self._perf_buffer = ttk.Label(perf_row, text="Buffer: -", width=22,
+                                      font=("", 9))
+        self._perf_buffer.pack(side="left")
+        self._perf_load = ttk.Label(perf_row, text="Buffer load: -", width=20,
+                                    font=("", 9))
+        self._perf_load.pack(side="left", padx=(8, 0))
+        self._perf_underruns = ttk.Label(perf_row, text="Underruns: -",
+                                         width=18, font=("", 9))
+        self._perf_underruns.pack(side="left", padx=(8, 0))
+        self._perf_hint = ttk.Label(
+            perf_frame,
+            text="Buffer load ~= % of the audio deadline the render used "
+                 "(FL CPU-meter analog). Near 100% -> clicks/pops: raise the "
+                 "buffer size in Settings > Audio.",
+            font=("", 8), foreground="#8b949e", wraplength=600,
+            justify="left")
+        self._perf_hint.pack(anchor="w", pady=(4, 0))
+
         # -- per-track meters + voices ---------------------------------
         tracks_frame = ttk.LabelFrame(main, text="Tracks (live)", padding=6)
-        tracks_frame.pack(fill="x")
+        tracks_frame.pack(fill="x", pady=(8, 0))
         self._tracks_frame = tracks_frame
         self._rebuild_tracks()
 
@@ -138,10 +167,40 @@ class DebugWindow(tk.Toplevel):
                 self._poll_meters(bridge, project)
                 self._poll_voices(bridge, project)
                 self._poll_events(bridge, project)
+                self._poll_perf(bridge)
             self._poll_invalidation()
         except Exception:
             pass
         self.after(66, self._poll)  # ~15 Hz
+
+    def _poll_perf(self, bridge):
+        """Audio performance readout (FL CPU-meter / underrun analogs)."""
+        try:
+            stats = bridge.backend_stats()
+            backend = bridge.backend_name()
+            sample_rate = bridge.sample_rate
+        except Exception:
+            return
+        block_frames = stats["block_frames"]
+        max_us = stats["max_callback_us"]
+        self._perf_backend.config(text=f"Backend: {backend}")
+        if block_frames and sample_rate:
+            ms = block_frames / sample_rate * 1000.0
+            self._perf_buffer.config(
+                text=f"Buffer: {block_frames} frames ({ms:.1f} ms)")
+            # FL's CPU meter: % of the buffer deadline the render consumed.
+            deadline_us = block_frames / sample_rate * 1_000_000.0
+            load = max_us / deadline_us * 100.0 if deadline_us else 0.0
+            self._perf_load.config(text=f"Buffer load: {load:.0f}%")
+            # Warn color when close to the deadline.
+            self._perf_load.config(
+                foreground="#f85149" if load >= 90 else
+                           "#d29922" if load >= 70 else "#c9d1d9")
+        else:
+            self._perf_buffer.config(text="Buffer: -")
+            self._perf_load.config(text="Buffer load: -")
+        self._perf_underruns.config(
+            text=f"Underruns: {stats['underruns']}")
 
     def _poll_invalidation(self):
         """Show recent dirty-region events (research topic 34)."""

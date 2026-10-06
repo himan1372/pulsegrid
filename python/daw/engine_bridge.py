@@ -319,6 +319,89 @@ class EngineBridge:
     def backend_name(self) -> str:
         return str(self._eng.backend_name())
 
+    # -- audio output selection (v0.42.0) ----------------------------------
+
+    def audio_devices(self) -> list[dict]:
+        """Every output device on every host.
+
+        Returns dicts with host_id, host_name, device_name, is_default.
+        Empty list = no audio hardware (null sink will be used).
+        """
+        try:
+            devs = self._eng.audio_devices()
+        except Exception as e:
+            raise EngineError(f"could not list audio devices: {e}") from e
+        return [
+            {"host_id": str(h), "host_name": str(hn),
+             "device_name": str(d), "is_default": bool(default)}
+            for h, hn, d, default in devs
+        ]
+
+    def audio_selection(self) -> tuple[str | None, str | None]:
+        """Currently requested (host_id, device_name); (None, None) = default."""
+        try:
+            host_id, device_name = self._eng.audio_selection()
+        except Exception as e:
+            raise EngineError(f"could not read audio selection: {e}") from e
+        return host_id, device_name
+
+    def set_audio_output(self, host_id: str | None,
+                         device_name: str | None) -> None:
+        """Choose the audio output. None/None = System default.
+
+        Takes effect on the next backend build; call
+        reapply_audio_backend() to switch live.
+        """
+        try:
+            self._eng.set_audio_output(host_id, device_name)
+        except Exception as e:
+            raise EngineError(f"could not set audio output: {e}") from e
+
+    def reapply_audio_backend(self) -> None:
+        """Re-open the backend on the selected device.
+
+        Keeps the transport playing (position preserved) when it was
+        running; otherwise the new device activates on the next Play.
+        """
+        try:
+            self._eng.reapply_audio_backend()
+        except Exception as e:
+            raise EngineError(f"could not switch audio device: {e}") from e
+
+    def set_buffer_frames(self, frames: int | None) -> None:
+        """Set the audio buffer size in frames (None = driver default).
+
+        The real-time lever: bigger buffers give the CPU more time per
+        block (fewer underruns) at the cost of latency. Takes effect on
+        the next backend build; call reapply_audio_backend() to apply live.
+        """
+        try:
+            self._eng.set_buffer_frames(frames)
+        except Exception as e:
+            raise EngineError(f"could not set buffer size: {e}") from e
+
+    def buffer_frames(self) -> int | None:
+        """Currently requested buffer size in frames (None = default)."""
+        try:
+            return self._eng.buffer_frames()
+        except Exception as e:
+            raise EngineError(f"could not read buffer size: {e}") from e
+
+    def backend_stats(self) -> dict:
+        """Live backend counters for the performance readout.
+
+        Returns callbacks, max_callback_us, underruns, block_frames.
+        max_callback_us / (block_frames / sample_rate) is FL Studio's
+        CPU-meter metric: % of the buffer deadline the render consumed.
+        """
+        try:
+            callbacks, max_us, underruns, block_frames = \
+                self._eng.backend_stats()
+        except Exception as e:
+            raise EngineError(f"could not read backend stats: {e}") from e
+        return {"callbacks": callbacks, "max_callback_us": max_us,
+                "underruns": underruns, "block_frames": block_frames}
+
     def stats(self) -> dict:
         return dict(self._eng.stats())
 

@@ -207,7 +207,12 @@ class PulsegridApp:
             get_plugin_dir=lambda: self._plugin_dir,
             on_plugin_dir=self._set_plugin_dir,
             get_multithreaded=lambda: self._multithreaded,
-            on_multithreaded=self._set_multithreaded)
+            on_multithreaded=self._set_multithreaded,
+            get_audio_devices=self.engine.audio_devices,
+            get_audio_selection=self.engine.audio_selection,
+            on_audio_output=self._on_audio_output,
+            get_buffer_frames=self.engine.buffer_frames,
+            on_buffer_frames=self._on_buffer_frames)
         self.left_notebook.add(self.settings, text="Settings")
 
         center = ttk.Frame(self.main_paned)
@@ -246,6 +251,10 @@ class PulsegridApp:
         # Song-mode capture: T0 anchor (beats) when rec-armed playback starts.
         # On stop, captured notes become a new Pattern + Clip at T0 (FL-style).
         self._record_t0 = None
+        # Pending count-in callback id (root.after handle); cancelled by
+        # stop() so a stale count-in can never start playback after the
+        # user pressed Stop (v0.42.0 transport-safety fix).
+        self._count_in_after_id = None
         self.piano = PianoKeyboard(
             editors,
             on_note_on=self._piano_note_on,
@@ -691,6 +700,26 @@ class PulsegridApp:
         self._set_refresh_rate(layout.get("refresh_rate", "medium"),
                                quiet=True)
         self._set_plugin_dir(layout.get("plugin_dir", ""), quiet=True)
+        # Restore the chosen audio output (v0.42.0). A device that has
+        # vanished since is reported, not fatal: the engine falls back to
+        # the null sink with the reason in the backend description.
+        host_id = layout.get("audio_host")
+        device_name = layout.get("audio_device")
+        if host_id or device_name:
+            try:
+                self.engine.set_audio_output(host_id, device_name)
+            except EngineError:
+                pass
+            self.settings.sync_audio_selection(
+                self.engine.audio_selection())
+        # Restore the buffer size (v0.42.0); invalid values are ignored.
+        buffer_frames = layout.get("audio_buffer")
+        if isinstance(buffer_frames, int) and buffer_frames > 0:
+            try:
+                self.engine.set_buffer_frames(buffer_frames)
+            except EngineError:
+                pass
+            self.settings.sync_buffer_frames(self.engine.buffer_frames())
         if not layout.get("channel_rack", True):
             self.toggle_channel_rack()
         if not layout.get("piano_roll", True):
@@ -745,6 +774,11 @@ class PulsegridApp:
             except tk.TclError:
                 return []
 
+        host_id, device_name = self.engine.audio_selection()
+        try:
+            buffer_frames = self.engine.buffer_frames()
+        except EngineError:
+            buffer_frames = None
         layout = {
             "left_visible": str(self.left_notebook) in self.main_paned.panes(),
             "left_tab": self.left_notebook.index("current"),
@@ -756,6 +790,9 @@ class PulsegridApp:
             "confirm_on_discard": self.confirm_on_discard,
             "refresh_rate": self._refresh_rate,
             "plugin_dir": self._plugin_dir,
+            "audio_host": host_id,
+            "audio_device": device_name,
+            "audio_buffer": buffer_frames,
             "workspace_sash": sash_coords(self.workspace_paned),
             "main_sash": sash_coords(self.main_paned),
             "center_sash": sash_coords(self.center_paned),
@@ -855,6 +892,8 @@ class PulsegridApp:
             mode = "medium"
         self._refresh_rate = mode
         self.settings.sync_refresh(mode)
+        if not quiet:
+            self._status(f"Animation refresh rate: {mode}.")
 
     def _set_multithreaded(self, enabled: bool) -> None:
         """Enable/disable multithreaded rendering (FL-style)."""
@@ -864,8 +903,55 @@ class PulsegridApp:
         except Exception:
             pass  # Engine not ready yet.
         self._status(f"Multithreading {'enabled' if enabled else 'disabled'}.")
-        if not quiet:
-            self._status(f"Animation refresh rate: {mode}.")
+
+    def _on_audio_output(self, host_id: str | None,
+                         device_name: str | None) -> None:
+        """Apply a new audio output choice from Settings (v0.42.0).
+
+        Switches the backend live: if the transport is playing it keeps
+        playing on the new device (position preserved); otherwise the new
+        device activates on the next Play. The choice persists in
+        layout.json. Failures are reported, never silent.
+        """
+        try:
+            self.engine.set_audio_output(host_id, device_name)
+            self.engine.reapply_audio_backend()
+        except EngineError as e:
+            show_error(self.root, "Audio device switch failed", str(e))
+            self.settings.sync_audio_selection(self.engine.audio_selection())
+            return
+        self._save_layout()
+        self._sync_audio_status()
+        label = (f"{host_id}: {device_name}" if host_id or device_name
+                 else "System default")
+        self._status(f"Audio output -> {label}.")
+
+    def _sync_audio_status(self) -> None:
+        """Refresh the Settings audio status line with the live backend."""
+        try:
+            self.settings.refresh_audio_status(
+                f"Active: {self.engine.backend_name()}")
+        except Exception:
+            pass
+
+    def _on_buffer_frames(self, frames: int | None) -> None:
+        """Apply a new audio buffer size from Settings (v0.42.0).
+
+        The real-time lever both FL Studio and LMMS expose: a bigger
+        buffer gives the CPU more time per block (fewer underruns) at the
+        cost of latency. Applies live via reapply_audio_backend().
+        """
+        try:
+            self.engine.set_buffer_frames(frames)
+            self.engine.reapply_audio_backend()
+        except EngineError as e:
+            show_error(self.root, "Buffer size change failed", str(e))
+            self.settings.sync_buffer_frames(self.engine.buffer_frames())
+            return
+        self._save_layout()
+        self._sync_audio_status()
+        label = f"{frames} samples" if frames else "driver default"
+        self._status(f"Audio buffer -> {label}.")
 
     def _set_plugin_dir(self, path: str, quiet: bool = False) -> None:
         path = (path or "").strip()
@@ -1085,7 +1171,24 @@ class PulsegridApp:
         self._status("Count-in... get ready.")
         # 1 bar at current tempo.
         ms_per_beat = 60000.0 / self.project.tempo
-        self.root.after(int(ms_per_beat * 4), self._begin_playback)
+        # Defensive: never leave two count-ins pending.
+        self._cancel_count_in()
+        self._count_in_after_id = self.root.after(
+            int(ms_per_beat * 4), self._on_count_in_done)
+
+    def _on_count_in_done(self) -> None:
+        """Count-in elapsed: begin playback (unless stop() cancelled us)."""
+        self._count_in_after_id = None
+        self._begin_playback()
+
+    def _cancel_count_in(self) -> None:
+        """Drop a pending count-in so it can never start playback late."""
+        if self._count_in_after_id is not None:
+            try:
+                self.root.after_cancel(self._count_in_after_id)
+            except Exception:
+                pass
+            self._count_in_after_id = None
 
     def _begin_playback(self) -> None:
         self._push_to_engine()
@@ -1098,12 +1201,16 @@ class PulsegridApp:
         self.engine.play()
         self.transport.set_backend(self.engine.backend_name())
         self.transport.set_playing(True)
+        self.settings.refresh_backend(self.engine.backend_name())
+        self._sync_audio_status()
         if self.transport.is_rec_armed():
             self._status("Recording -- play the piano!")
         else:
             self._status(f"Playing -- {self.engine.backend_name()}")
 
     def stop(self) -> None:
+        # A pending count-in must never fire after the user pressed Stop.
+        self._cancel_count_in()
         try:
             self.engine.stop()
         except EngineError as e:
@@ -1117,10 +1224,16 @@ class PulsegridApp:
         if self._record_t0 is not None:
             t0 = self._record_t0
             self._record_t0 = None
-            if self._capture.notes:
-                self._auto_place_capture(t0)
-            else:
-                self._status("Stopped -- nothing captured.")
+            try:
+                if self._capture.notes:
+                    self._auto_place_capture(t0)
+                else:
+                    self._status("Stopped -- nothing captured.")
+                    return
+            except Exception as e:
+                # The take failed to place; never let that break the
+                # transport -- report it on the status line and stop clean.
+                self._status(f"Stopped -- could not place take: {e}")
                 return
         self._status("Stopped.")
 
@@ -2697,6 +2810,12 @@ class PulsegridApp:
         placed on the first track at the recording-start position T0.
         Notes are stored relative to T0; the clip holds the absolute
         placement. One undo step.
+
+        The take channel uses the "lead" instrument (v0.42.0 fix): it is
+        the pitched voice, so captured piano notes sound at their
+        recorded pitches. (v0.19.0-v0.41.0 used instrument="keys", which
+        is not a valid instrument -- every take failed validation and
+        was silently discarded.)
         """
         from ..project import Channel, Clip, Note, Pattern
         grid = dict(QUANTIZE_GRIDS).get(self._quantize_label, 0.25)
@@ -2750,7 +2869,7 @@ class PulsegridApp:
                           steps=steps,
                           channels=[Channel(id=f"{pid}-keys",
                                             name="Keys",
-                                            instrument="keys",
+                                            instrument="lead",
                                             pitch=60,
                                             notes=notes)])
             project.patterns.append(pat)
