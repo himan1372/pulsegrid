@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['/tmp/pg_entry.py'],
+    ['/root/pg-entry.py'],
     pathex=['python'],
     binaries=[],
     datas=[],

@@ -225,6 +225,10 @@ pub struct Engine {
     /// The user's chosen audio output (host/device). `None`/`None` means
     /// "System default". Applied whenever the backend is (re)built.
     audio_selection: backend::AudioSelection,
+    /// The user's chosen *input* device (FL Studio's separate Input
+    /// selector). Stored and persisted; no input stream is opened in
+    /// this version (input monitoring/recording is future work).
+    audio_input_selection: backend::AudioSelection,
     /// Open native plugin GUIs, keyed by GUI id. `PluginGui` is
     /// main-thread-only (`!Send`), so it must live here on the control
     /// thread — never in the audio graph.
@@ -349,6 +353,7 @@ impl Engine {
             backend: None,
             backend_desc: "not started".to_string(),
             audio_selection: backend::AudioSelection::default(),
+            audio_input_selection: backend::AudioSelection::default(),
             plugin_guis: HashMap::new(),
             next_gui_id: 1,
             plugin_instances: HashMap::new(),
@@ -558,6 +563,27 @@ impl Engine {
     /// The currently requested buffer size in frames (`None` = default).
     pub fn buffer_frames(&self) -> Option<u32> {
         self.audio_selection.buffer_frames
+    }
+
+    /// Every input device on every available host (for the Settings UI).
+    pub fn audio_input_devices(&self) -> Result<Vec<backend::AudioDevice>, String> {
+        backend::list_audio_input_devices()
+    }
+
+    /// Remember the user's chosen input device. Stored + persisted; no
+    /// input stream is opened in this version.
+    /// `None`/`None` means "System default".
+    pub fn set_audio_input(&mut self, host_id: Option<String>, device_name: Option<String>) {
+        self.audio_input_selection.host_id = host_id;
+        self.audio_input_selection.device_name = device_name;
+    }
+
+    /// The currently requested input as (host_id, device_name).
+    pub fn audio_input(&self) -> (Option<String>, Option<String>) {
+        (
+            self.audio_input_selection.host_id.clone(),
+            self.audio_input_selection.device_name.clone(),
+        )
     }
 
     /// Drop the current backend so the selected device is (re)opened.

@@ -212,7 +212,10 @@ class PulsegridApp:
             get_audio_selection=self.engine.audio_selection,
             on_audio_output=self._on_audio_output,
             get_buffer_frames=self.engine.buffer_frames,
-            on_buffer_frames=self._on_buffer_frames)
+            on_buffer_frames=self._on_buffer_frames,
+            get_input_devices=self.engine.audio_input_devices,
+            get_input_selection=self.engine.audio_input,
+            on_audio_input=self._on_audio_input)
         self.left_notebook.add(self.settings, text="Settings")
 
         center = ttk.Frame(self.main_paned)
@@ -720,6 +723,15 @@ class PulsegridApp:
             except EngineError:
                 pass
             self.settings.sync_buffer_frames(self.engine.buffer_frames())
+        # Restore the input device choice (v0.43.0).
+        in_host = layout.get("audio_input_host")
+        in_device = layout.get("audio_input_device")
+        if in_host or in_device:
+            try:
+                self.engine.set_audio_input(in_host, in_device)
+            except EngineError:
+                pass
+            self.settings.sync_input_selection(self.engine.audio_input())
         if not layout.get("channel_rack", True):
             self.toggle_channel_rack()
         if not layout.get("piano_roll", True):
@@ -793,6 +805,8 @@ class PulsegridApp:
             "audio_host": host_id,
             "audio_device": device_name,
             "audio_buffer": buffer_frames,
+            "audio_input_host": self.engine.audio_input()[0],
+            "audio_input_device": self.engine.audio_input()[1],
             "workspace_sash": sash_coords(self.workspace_paned),
             "main_sash": sash_coords(self.main_paned),
             "center_sash": sash_coords(self.center_paned),
@@ -952,6 +966,24 @@ class PulsegridApp:
         self._sync_audio_status()
         label = f"{frames} samples" if frames else "driver default"
         self._status(f"Audio buffer -> {label}.")
+
+    def _on_audio_input(self, host_id: str | None,
+                        device_name: str | None) -> None:
+        """Record the user's input-device choice (v0.43.0).
+
+        FL Studio exposes a separate Input selector; we mirror it. The
+        choice is stored + persisted for future recording support -- no
+        input stream is opened in this version.
+        """
+        try:
+            self.engine.set_audio_input(host_id, device_name)
+        except EngineError as e:
+            show_error(self.root, "Input device change failed", str(e))
+            self.settings.sync_input_selection(self.engine.audio_input())
+            return
+        self._save_layout()
+        label = device_name or "System default"
+        self._status(f"Audio input -> {label} (not captured in this version).")
 
     def _set_plugin_dir(self, path: str, quiet: bool = False) -> None:
         path = (path or "").strip()

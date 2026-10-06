@@ -977,6 +977,44 @@ impl PyEngine {
             .buffer_frames())
     }
 
+    /// Every input device, as (host_id, host_name, device_name, is_default).
+    fn audio_input_devices(&self) -> PyResult<Vec<(String, String, String, bool)>> {
+        let devs = self
+            .inner
+            .lock()
+            .map_err(|_| err_to_py("engine lock poisoned".to_string()))?
+            .audio_input_devices()
+            .map_err(err_to_py)?;
+        Ok(devs
+            .into_iter()
+            .map(|d| (d.host_id, d.host_name, d.device_name, d.is_default))
+            .collect())
+    }
+
+    /// Remember the user's chosen input device (None/None = default).
+    /// Stored + persisted; no input stream is opened in this version.
+    #[pyo3(signature = (host_id=None, device_name=None))]
+    fn set_audio_input(
+        &self,
+        host_id: Option<String>,
+        device_name: Option<String>,
+    ) -> PyResult<()> {
+        self.inner
+            .lock()
+            .map_err(|_| err_to_py("engine lock poisoned".to_string()))?
+            .set_audio_input(host_id, device_name);
+        Ok(())
+    }
+
+    /// The currently requested input as (host_id, device_name).
+    fn audio_input(&self) -> PyResult<(Option<String>, Option<String>)> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| err_to_py("engine lock poisoned".to_string()))?
+            .audio_input())
+    }
+
     /// Live backend counters: (callbacks, max_callback_us, underruns,
     /// block_frames). The UI renders FL Studio's CPU-meter metric from
     /// these: max render time as a percentage of the buffer deadline.

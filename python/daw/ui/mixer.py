@@ -105,6 +105,12 @@ class Mixer(ttk.Frame):
         self._strips.bind("<Configure>",
                           lambda _e: self._canvas.configure(
                               scrollregion=self._canvas.bbox("all")))
+        # Wheel scrolling (FL conventions): wheel = vertical,
+        # Shift+wheel = horizontal (the strips' scrollable axis).
+        from .scroll import bind_wheel
+        bind_wheel(self._canvas,
+                   xscroll=lambda n: self._canvas.xview_scroll(n, "units"),
+                   yscroll=lambda n: self._canvas.yview_scroll(n, "units"))
         # track_id -> dict of live widgets/vars for in-place updates.
         self._strip_widgets = {}
         # Extracted meter renderer (research topic 29): the Mixer owns

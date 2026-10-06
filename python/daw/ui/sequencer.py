@@ -53,6 +53,12 @@ class Sequencer(ttk.Frame):
         self.canvas.pack(side="left", fill="both", expand=True)
         self.canvas.bind("<Button-1>", self._on_click)
         self.canvas.bind("<Configure>", lambda _e: self._draw())
+        # Wheel scrolling (FL conventions): wheel = vertical,
+        # Shift+wheel = horizontal.
+        from .scroll import bind_wheel
+        bind_wheel(self.canvas,
+                   xscroll=lambda n: self.canvas.xview_scroll(n, "units"),
+                   yscroll=lambda n: self.canvas.yview_scroll(n, "units"))
 
     # -- data -----------------------------------------------------------
 

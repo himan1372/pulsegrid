@@ -7,12 +7,21 @@ Verifies the extraction boundary from the FL/LMMS painter research:
     canvas, so no display is needed).
 """
 
+import os
+
+import pytest
+
 from daw.project import Clip, Pattern, PlaylistTrack, new_default_project
 from daw.ui.playlist_painter import (
     BAR_W,
     ROW_H,
     PlaylistPainter,
     build_draw_state,
+)
+
+needs_display = pytest.mark.skipif(
+    not os.environ.get("DISPLAY"),
+    reason="drag tests need an X11 display (run under xvfb-run)",
 )
 
 
@@ -172,3 +181,55 @@ def test_clear_playhead():
     painter.move_playhead(cv, 100.0, ROW_H)
     painter.clear_playhead(cv)
     assert cv.calls[-1] == ("delete", "playhead")
+
+
+@needs_display
+def test_drag_motion_keeps_cache_in_sync():
+    """Mid-drag cache sync: cv.move must update the retained ClipDraw.
+
+    Regression guard for the Windows "stretched ghost" artifact: if the
+    cache still held the pre-move geometry, a refresh() landing mid-drag
+    would delete+redraw at the stale position while the canvas showed the
+    moved items.
+    """
+    import tkinter as tk
+
+    from daw.project import Clip
+    from daw.ui.app import PulsegridApp
+
+    root = tk.Tk()
+    try:
+        app = PulsegridApp(root)
+        root.update()
+        pl = app.playlist
+        proj = app.project
+        track = proj.tracks[0]
+        pat = proj.patterns[0]
+        if not track.clips:
+            track.clips.append(Clip(pattern_id=pat.id, start_beat=0, bars=2))
+            pl.refresh()
+        root.update()
+        cv = pl._canvases[track.id]
+        cache = pl._lane_cache(track.id)
+        before = cache.get("clip-0")
+        x0_before = before.x0
+        # Press inside the clip and drag right by two snap increments
+        # (the snap selector defaults to bars, so a sub-bar drag would
+        # correctly quantize back to zero).
+        snap = pl._snap_beats()
+        beat_w = pl._bar_w / 4.0
+        x_press = before.x0 + 10
+        dx = 2 * snap * beat_w
+        cv.event_generate("<ButtonPress-1>", x=int(x_press), y=20)
+        root.update()
+        cv.event_generate("<B1-Motion>", x=int(x_press + dx), y=20)
+        root.update()
+        moved = cache.get("clip-0")
+        assert moved.x0 > x0_before, "cache not updated by drag"
+        assert abs(moved.x0 - (x0_before + dx)) < 1.0
+        # Canvas item and cache agree.
+        assert abs(cv.coords("clip-0")[0] - moved.x0) < 1.0
+        cv.event_generate("<ButtonRelease-1>", x=int(x_press + dx), y=20)
+        root.update()
+    finally:
+        root.destroy()

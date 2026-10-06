@@ -402,6 +402,36 @@ class EngineBridge:
         return {"callbacks": callbacks, "max_callback_us": max_us,
                 "underruns": underruns, "block_frames": block_frames}
 
+    def audio_input_devices(self) -> list[dict]:
+        """Every input device, as dicts with host_id/host_name/device_name/
+        is_default. Empty list (not an error) when there is no input
+        hardware, e.g. on a headless VM."""
+        try:
+            devs = self._eng.audio_input_devices()
+        except Exception as e:
+            raise EngineError(f"could not list input devices: {e}") from e
+        return [{"host_id": h, "host_name": hn, "device_name": d,
+                 "is_default": df} for h, hn, d, df in devs]
+
+    def set_audio_input(self, host_id: str | None,
+                        device_name: str | None) -> None:
+        """Remember the user's chosen input device (None/None = default).
+
+        Stored + persisted; no input stream is opened in this version --
+        input monitoring/recording is future work.
+        """
+        try:
+            self._eng.set_audio_input(host_id, device_name)
+        except Exception as e:
+            raise EngineError(f"could not set input device: {e}") from e
+
+    def audio_input(self) -> tuple[str | None, str | None]:
+        """Currently requested input as (host_id, device_name)."""
+        try:
+            return self._eng.audio_input()
+        except Exception as e:
+            raise EngineError(f"could not read input selection: {e}") from e
+
     def stats(self) -> dict:
         return dict(self._eng.stats())
 

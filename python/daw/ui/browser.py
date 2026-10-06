@@ -79,6 +79,29 @@ class Browser(ttk.Frame):
 
         self._body = ttk.Frame(self)
         self._body.pack(fill="both", expand=True)
+        # Vertical scrolling for the section list (wheel = vertical).
+        self._body_canvas = tk.Canvas(self._body, bg="#0d1117",
+                                      highlightthickness=0)
+        _body_vscroll = ttk.Scrollbar(self._body, orient="vertical",
+                                      command=self._body_canvas.yview)
+        self._body_canvas.pack(side="left", fill="both", expand=True)
+        _body_vscroll.pack(side="right", fill="y")
+        self._body_canvas.configure(yscrollcommand=_body_vscroll.set)
+        self._body_inner = ttk.Frame(self._body_canvas)
+        self._body_win = self._body_canvas.create_window(
+            0, 0, window=self._body_inner, anchor="nw")
+        self._body_inner.bind(
+            "<Configure>",
+            lambda _e: self._body_canvas.configure(
+                scrollregion=self._body_canvas.bbox("all")))
+        self._body_canvas.bind(
+            "<Configure>",
+            lambda e: self._body_canvas.itemconfigure(
+                self._body_win, width=e.width))
+        from .scroll import bind_wheel
+        bind_wheel(self._body_canvas,
+                   yscroll=lambda n: self._body_canvas.yview_scroll(n, "units"))
+        # refresh() rebuilds sections inside _body_inner (below).
 
         self.refresh_presets()
 
@@ -95,11 +118,11 @@ class Browser(ttk.Frame):
         self.refresh()
 
     def refresh(self) -> None:
-        for child in self._body.winfo_children():
+        for child in self._body_inner.winfo_children():
             child.destroy()
         filt = self._filter_var.get().strip().lower()
 
-        inst_frame = ttk.LabelFrame(self._body, text="Instruments", padding=4)
+        inst_frame = ttk.LabelFrame(self._body_inner, text="Instruments", padding=4)
         inst_frame.pack(fill="x", padx=8, pady=4)
         for inst in INSTRUMENTS:
             label = INSTRUMENT_LABELS[inst]
@@ -114,7 +137,7 @@ class Browser(ttk.Frame):
                 hint=f"Drag onto a channel to make it a {label}",
             )
 
-        fx_frame = ttk.LabelFrame(self._body, text="Effects", padding=4)
+        fx_frame = ttk.LabelFrame(self._body_inner, text="Effects", padding=4)
         fx_frame.pack(fill="x", padx=8, pady=4)
         for key, name in FX_NAMES.items():
             if filt and filt not in name.lower():
@@ -129,7 +152,7 @@ class Browser(ttk.Frame):
                      "(built-in effect -- no plug-ins)",
             )
 
-        pre_outer = ttk.LabelFrame(self._body, text="Presets", padding=4)
+        pre_outer = ttk.LabelFrame(self._body_inner, text="Presets", padding=4)
         pre_outer.pack(fill="x", padx=8, pady=4)
         pre_tools = ttk.Frame(pre_outer)
         pre_tools.pack(fill="x", pady=(0, 2))
@@ -150,7 +173,7 @@ class Browser(ttk.Frame):
                 continue
             self._preset_row(pre_outer, entry_)
 
-        pat_frame = ttk.LabelFrame(self._body, text="Patterns", padding=4)
+        pat_frame = ttk.LabelFrame(self._body_inner, text="Patterns", padding=4)
         pat_frame.pack(fill="x", padx=8, pady=4)
         if self._project is not None:
             for i, pat in enumerate(self._project.patterns):
@@ -170,7 +193,7 @@ class Browser(ttk.Frame):
                          "Double-click to edit | Right-click for actions",
                 )
 
-        samp_frame = ttk.LabelFrame(self._body, text="Samples", padding=4)
+        samp_frame = ttk.LabelFrame(self._body_inner, text="Samples", padding=4)
         samp_frame.pack(fill="x", padx=8, pady=4)
         if self._on_add_sample is not None:
             ttk.Button(samp_frame, text="Add sample...",

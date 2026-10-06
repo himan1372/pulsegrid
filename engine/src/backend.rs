@@ -39,12 +39,189 @@ pub struct AudioSelection {
     pub buffer_frames: Option<u32>,
 }
 
+/// Result of negotiating a stream config with a device.
+///
+/// Reference pattern: SDL's `SDL_OpenAudioDevice` takes a *desired* spec
+/// and returns the *obtained* spec -- "these are just requests, the backend
+/// may change any of these values" -- then SDL converts automatically.
+/// CPAL leaves the conversion to us, so when the device can't do our
+/// native stereo/44100/F32 we open its default config and convert at the
+/// boundary with [`OutputAdapter`] instead of failing (the v0.42.0
+/// behavior that left SteelSeries Sonar virtual devices silent).
+struct NegotiatedOutput {
+    /// The config the device will actually run.
+    config: cpal::StreamConfig,
+    /// `None` when the device runs our native format (no conversion).
+    adapter: Option<OutputAdapter>,
+    /// Human-readable actual format, e.g. "48000 Hz stereo" or
+    /// "48000 Hz mono (converted from 44100 Hz stereo)".
+    desc: String,
+}
+
+/// Converts engine-native stereo f32 @ `engine_rate` to whatever the
+/// device actually runs (different rate and/or channel count).
+///
+/// Linear resampling + channel mapping. Sub-sample position error is
+/// inaudible; the engine timeline stays sample-accurate enough for
+/// event scheduling.
+struct OutputAdapter {
+    engine_rate: u32,
+    device_rate: u32,
+    device_channels: u16,
+    /// Fractional engine-frame position (advanced per device block).
+    engine_pos: f64,
+    scratch: Vec<f32>,
+}
+
+impl OutputAdapter {
+    fn new(engine_rate: u32, device_rate: u32, device_channels: u16) -> Self {
+        OutputAdapter {
+            engine_rate,
+            device_rate,
+            device_channels,
+            engine_pos: 0.0,
+            scratch: Vec::new(),
+        }
+    }
+
+    /// Render one device block: engine renders stereo f32 into scratch,
+    /// then we resample + channel-map into `out`.
+    fn render_into<F>(&mut self, out: &mut [f32], render: &mut F, stats: &BackendStats)
+    where
+        F: FnMut(&mut [f32], u64),
+    {
+        let dev_ch = self.device_channels.max(1) as usize;
+        let dev_frames = out.len() / dev_ch;
+        if dev_frames == 0 {
+            return;
+        }
+        let ratio = self.engine_rate as f64 / self.device_rate as f64;
+        // Engine frames needed to cover the block, +1 for interpolation.
+        let need = (dev_frames as f64 * ratio).ceil() as usize + 1;
+        self.scratch.resize(need * 2, 0.0);
+        let start_sample = self.engine_pos as u64;
+        render(&mut self.scratch[..need * 2], start_sample);
+        let base_pos = self.engine_pos - start_sample as f64;
+        for i in 0..dev_frames {
+            let epos = base_pos + i as f64 * ratio;
+            let i0 = (epos as usize).min(need - 1);
+            let frac = (epos - i0 as f64) as f32;
+            let i1 = (i0 + 1).min(need - 1);
+            let l = self.scratch[i0 * 2] * (1.0 - frac)
+                + self.scratch[i1 * 2] * frac;
+            let r = self.scratch[i0 * 2 + 1] * (1.0 - frac)
+                + self.scratch[i1 * 2 + 1] * frac;
+            let base = i * dev_ch;
+            // Channel map: stereo source to whatever the device has.
+            out[base] = if dev_ch == 1 { (l + r) * 0.5 } else { l };
+            if dev_ch >= 2 {
+                out[base + 1] = r;
+                for c in 2..dev_ch {
+                    out[base + c] = 0.0;
+                }
+            }
+        }
+        self.engine_pos += dev_frames as f64 * ratio;
+        stats.record_block(dev_frames as u64);
+    }
+}
+
+/// Pick a stream config the device actually supports.
+///
+/// 1. Prefer our native format (F32 stereo @ `engine_rate`) when any
+///    supported config covers it -- zero conversion, zero surprises.
+/// 2. Otherwise use the device's default output config and convert at
+///    the boundary (see [`OutputAdapter`]).
+///
+/// Returns an error only when the device reports no usable config at all.
+fn negotiate_output_config(
+    device: &cpal::Device,
+    engine_rate: u32,
+    buffer_frames: Option<u32>,
+) -> Result<NegotiatedOutput, String> {
+    use cpal::traits::DeviceTrait;
+    let buffer_size = match buffer_frames {
+        Some(n) => cpal::BufferSize::Fixed(n),
+        None => cpal::BufferSize::Default,
+    };
+    if let Ok(configs) = device.supported_output_configs() {
+        for cfg in configs {
+            if cfg.channels() == 2
+                && cfg.sample_format() == cpal::SampleFormat::F32
+                && cfg.min_sample_rate().0 <= engine_rate
+                && engine_rate <= cfg.max_sample_rate().0
+            {
+                let mut config = cfg
+                    .with_sample_rate(cpal::SampleRate(engine_rate))
+                    .config();
+                config.buffer_size = buffer_size;
+                return Ok(NegotiatedOutput {
+                    config,
+                    adapter: None,
+                    desc: format!("{engine_rate} Hz stereo"),
+                });
+            }
+        }
+    }
+    // Native format unsupported (e.g. virtual devices locked to 48 kHz):
+    // take whatever the device prefers and convert.
+    let def = device
+        .default_output_config()
+        .map_err(|e| format!("device has no usable output config ({e})"))?;
+    if def.sample_format() != cpal::SampleFormat::F32 {
+        return Err(format!(
+            "device default format {:?} is not float32 (unsupported)",
+            def.sample_format()
+        ));
+    }
+    let mut config = def.config();
+    config.buffer_size = buffer_size;
+    let desc = format!(
+        "{} Hz {} (converted from {engine_rate} Hz stereo)",
+        def.sample_rate().0,
+        if def.channels() == 1 {
+            "mono".to_string()
+        } else {
+            format!("{}ch", def.channels())
+        },
+    );
+    Ok(NegotiatedOutput {
+        config,
+        adapter: Some(OutputAdapter::new(
+            engine_rate,
+            def.sample_rate().0,
+            def.channels(),
+        )),
+        desc,
+    })
+}
+
 /// Enumerate every output device on every available CPAL host.
 ///
 /// Pure query: never opens a stream, never touches the running backend.
 /// Errors (a host that cannot even be listed) are reported as `Err`;
 /// individual devices whose names cannot be read are skipped.
 pub fn list_audio_devices() -> Result<Vec<AudioDevice>, String> {
+    list_audio_devices_filtered(Direction::Output)
+}
+
+/// Every *input* device (microphones, line-ins) on every available host.
+///
+/// FL Studio exposes a separate Input selector in Audio Settings (its
+/// per-mixer-track Input menus read from the chosen input device); we
+/// mirror that separation. Selecting an input here only records the
+/// choice -- no input stream is opened in this version.
+pub fn list_audio_input_devices() -> Result<Vec<AudioDevice>, String> {
+    list_audio_devices_filtered(Direction::Input)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Direction {
+    Output,
+    Input,
+}
+
+fn list_audio_devices_filtered(dir: Direction) -> Result<Vec<AudioDevice>, String> {
     use cpal::traits::{DeviceTrait, HostTrait};
     let mut out = Vec::new();
     for hid in cpal::available_hosts() {
@@ -53,9 +230,14 @@ pub fn list_audio_devices() -> Result<Vec<AudioDevice>, String> {
             Err(e) => return Err(format!("audio host '{}' unavailable: {}", hid.name(), e)),
         };
         let host_id = hid.name().to_string();
-        let default_name: Option<String> = host
-            .default_output_device()
-            .and_then(|d| d.name().ok());
+        let default_name: Option<String> = match dir {
+            Direction::Output => host
+                .default_output_device()
+                .and_then(|d| d.name().ok()),
+            Direction::Input => host
+                .default_input_device()
+                .and_then(|d| d.name().ok()),
+        };
         let devices = host
             .devices()
             .map_err(|e| format!("cannot list devices for host '{host_id}': {e}"))?;
@@ -64,6 +246,15 @@ pub fn list_audio_devices() -> Result<Vec<AudioDevice>, String> {
                 Ok(n) => n,
                 Err(_) => continue, // unreadable name: skip, don't fail all
             };
+            // CPAL's devices() mixes inputs and outputs; keep only the
+            // ones that actually support the requested direction.
+            let supports = match dir {
+                Direction::Output => dev.supported_output_configs().map(|mut c| c.next().is_some()).unwrap_or(false),
+                Direction::Input => dev.supported_input_configs().map(|mut c| c.next().is_some()).unwrap_or(false),
+            };
+            if !supports {
+                continue;
+            }
             out.push(AudioDevice {
                 host_id: host_id.clone(),
                 host_name: host_id.clone(),
@@ -236,28 +427,31 @@ where
 /// Open and immediately drop a throwaway stream to test whether the
 /// *selected* output really works on this machine. Returns the device label
 /// on success, or the reason live output is unavailable.
+///
+/// The probe negotiates the stream config exactly like the real stream
+/// (see [`negotiate_output_config`]): a device that rejects our native
+/// stereo/44100 (e.g. virtual devices locked to 48 kHz) is probed with
+/// its default config instead of failing outright.
 fn probe_live_output(
     sample_rate: u32,
     sel: &AudioSelection,
 ) -> Result<String, String> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     let (_host, device, label) = resolve_device(sel)?;
-    let config = cpal::StreamConfig {
-        channels: 2,
-        sample_rate: cpal::SampleRate(sample_rate),
-        buffer_size: match sel.buffer_frames {
-            Some(n) => cpal::BufferSize::Fixed(n),
-            None => cpal::BufferSize::Default,
-        },
-    };
+    let neg = negotiate_output_config(
+        &device,
+        sample_rate,
+        sel.buffer_frames,
+    )
+    .map_err(|e| format!("{label}: {e}"))?;
     match device.build_output_stream(
-        &config,
+        &neg.config,
         |_out: &mut [f32], _: &cpal::OutputCallbackInfo| {},
         |_| {},
         None,
     ) {
         Ok(stream) => match stream.play() {
-            Ok(()) => Ok(label),
+            Ok(()) => Ok(format!("{label} ({})", neg.desc)),
             Err(e) => Err(format!("{label}: probe stream would not play ({e})")),
         },
         Err(e) => Err(format!("{label}: probe stream failed ({e})")),
@@ -278,20 +472,17 @@ where
     // Re-resolve (the probe already validated this selection a moment ago).
     let (_host, device, _label) = resolve_device(sel)?;
 
-    let config = cpal::StreamConfig {
-        channels: 2,
-        sample_rate: cpal::SampleRate(sample_rate),
-        // The user's real-time lever (FL/LMMS "buffer length" analog):
-        // Fixed(n) = more time insurance per block at the cost of latency.
-        buffer_size: match sel.buffer_frames {
-            Some(n) => cpal::BufferSize::Fixed(n),
-            None => cpal::BufferSize::Default,
-        },
-    };
+    // Negotiate the real stream config: native stereo/44100 when the
+    // device supports it, otherwise its default config + conversion.
+    let neg = negotiate_output_config(&device, sample_rate, sel.buffer_frames)
+        .map_err(|e| format!("cpal stream negotiation failed: {e}"))?;
 
     let stats = Arc::new(BackendStats::new());
     let stats_cb = stats.clone();
     let underruns = stats.clone();
+    let mut adapter = neg.adapter;
+    // Engine-timeline position for the native (no-conversion) path.
+    // The conversion path tracks its own fractional position.
     let mut sample_pos: u64 = 0;
 
     // NOTE: `render` moves into the callback below. Callers probe first (see
@@ -299,12 +490,19 @@ where
     // the error is reported rather than recovered from.
     let stream = device
         .build_output_stream(
-            &config,
+            &neg.config,
             move |out: &mut [f32], _info: &cpal::OutputCallbackInfo| {
                 let t0 = Instant::now();
-                render(out, sample_pos);
-                sample_pos += (out.len() / 2) as u64;
-                stats_cb.record_block((out.len() / 2) as u64);
+                match adapter.as_mut() {
+                    // Device runs our native format: render straight in.
+                    None => {
+                        render(out, sample_pos);
+                        sample_pos += (out.len() / 2) as u64;
+                        stats_cb.record_block((out.len() / 2) as u64);
+                    }
+                    // Device needs conversion (rate and/or channels).
+                    Some(ad) => ad.render_into(out, &mut render, &stats_cb),
+                }
                 stats_cb.record_callback(t0.elapsed().as_micros() as u64);
             },
             move |err| {
@@ -320,7 +518,7 @@ where
         .play()
         .map_err(|e| format!("cpal stream play failed: {}", e))?;
 
-    let desc = format!("live output ({label})");
+    let desc = format!("live output ({label} @ {})", neg.desc);
     Ok((Backend::Live { _stream: stream, stats }, desc))
 }
 
@@ -445,5 +643,84 @@ mod tests {
         s.record_callback(100);
         s.record_callback(50);
         assert_eq!(s.max_callback_us.load(Ordering::Relaxed), 100);
+    }
+
+    #[test]
+    fn adapter_identity_at_native_rate() {
+        // Same rate, stereo: output equals the rendered input.
+        let mut ad = OutputAdapter::new(44100, 44100, 2);
+        let stats = BackendStats::new();
+        let mut out = vec![0.0f32; 2 * 64];
+        let mut render = |buf: &mut [f32], _pos: u64| {
+            for (i, s) in buf.iter_mut().enumerate() {
+                *s = i as f32;
+            }
+        };
+        ad.render_into(&mut out, &mut render, &stats);
+        for (i, s) in out.iter().enumerate() {
+            assert!((s - i as f32).abs() < 1e-5, "i={i} s={s}");
+        }
+        assert_eq!(stats.block_frames.load(Ordering::Relaxed), 64);
+    }
+
+    #[test]
+    fn adapter_upsample_is_linear() {
+        // Device at 2x the engine rate: linear interpolation between
+        // engine frames.
+        let mut ad = OutputAdapter::new(44100, 88200, 2);
+        let stats = BackendStats::new();
+        let mut out = vec![0.0f32; 2 * 8];
+        // Engine renders a ramp: frame k -> (k, -k).
+        let mut render = |buf: &mut [f32], _pos: u64| {
+            for k in 0..buf.len() / 2 {
+                buf[k * 2] = k as f32;
+                buf[k * 2 + 1] = -(k as f32);
+            }
+        };
+        ad.render_into(&mut out, &mut render, &stats);
+        // Device frame 1 sits halfway between engine frames 0 and 1.
+        assert!((out[2] - 0.5).abs() < 1e-5, "l={}", out[2]);
+        assert!((out[3] + 0.5).abs() < 1e-5, "r={}", out[3]);
+        // Device frame 2 lands exactly on engine frame 1.
+        assert!((out[4] - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn adapter_mono_mixes_down() {
+        let mut ad = OutputAdapter::new(44100, 44100, 1);
+        let stats = BackendStats::new();
+        let mut out = vec![0.0f32; 4];
+        let mut render = |buf: &mut [f32], _pos: u64| {
+            for k in 0..buf.len() / 2 {
+                buf[k * 2] = 1.0;
+                buf[k * 2 + 1] = 0.5;
+            }
+        };
+        ad.render_into(&mut out, &mut render, &stats);
+        for s in out {
+            assert!((s - 0.75).abs() < 1e-6, "s={s}");
+        }
+    }
+
+    #[test]
+    fn adapter_advances_engine_position() {
+        // 48000 Hz device: engine_pos advances by 44100/48000 per frame.
+        use std::cell::RefCell;
+        let mut ad = OutputAdapter::new(44100, 48000, 2);
+        let stats = BackendStats::new();
+        let seen = RefCell::new(Vec::new());
+        let mut render = |buf: &mut [f32], pos: u64| {
+            seen.borrow_mut().push(pos);
+            buf.fill(0.0);
+        };
+        let mut out = vec![0.0f32; 2 * 480];
+        ad.render_into(&mut out, &mut render, &stats);
+        // 480 device frames consume 441 engine frames.
+        assert!((ad.engine_pos - 441.0).abs() < 1e-9, "pos={}", ad.engine_pos);
+        assert_eq!(*seen.borrow(), vec![0]);
+        let mut out2 = vec![0.0f32; 2 * 480];
+        ad.render_into(&mut out2, &mut render, &stats);
+        // Second block continues where the first left off (fractional).
+        assert_eq!(*seen.borrow(), vec![0, 441]);
     }
 }

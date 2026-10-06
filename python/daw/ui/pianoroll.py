@@ -13,8 +13,9 @@ engine renders fractional steps sample-accurately); the snap selector is
 only a placement aid. Snap values are fractions of a 1/16-note step:
 1/16 = 1 step, 1/32 = 1/2 step, 1/64 = 1/4 step, 1/128 = 1/8 step.
 "Off" disables snapping (free placement). Holding Alt during a
-move/resize/paint drag temporarily bypasses snap; Shift+mousewheel nudges
-the selected note by the snap increment.
+move/resize/paint drag temporarily bypasses snap; Alt+mousewheel nudges
+the selected note by the snap increment. Wheel scrolls vertically,
+Shift+wheel scrolls horizontally, middle-drag pans (FL conventions).
 
 Architecture (LMMS PianoRollPainter lesson): this widget owns state and
 interaction; all canvas rendering is delegated to PianoRollPainter.
@@ -141,10 +142,18 @@ class PianoRoll(ttk.Frame):
         self._canvas.bind("<B1-Motion>", self._motion)
         self._canvas.bind("<ButtonRelease-1>", self._release)
         self._canvas.bind("<Button-3>", self._right_click)
-        # Shift+mousewheel: nudge the selected note (FL 21.2.99 parity).
-        self._canvas.bind("<Shift-MouseWheel>", self._nudge_wheel)
-        self._canvas.bind("<Shift-Button-4>", lambda e: self._nudge(-1))
-        self._canvas.bind("<Shift-Button-5>", lambda e: self._nudge(1))
+        # Alt+mousewheel: nudge the selected note (was Shift+wheel; Shift
+        # is now horizontal scroll per FL convention -- see scroll.py).
+        self._canvas.bind("<Alt-MouseWheel>", self._nudge_wheel)
+        self._canvas.bind("<Alt-Button-4>", lambda e: self._nudge(-1))
+        self._canvas.bind("<Alt-Button-5>", lambda e: self._nudge(1))
+        # Wheel scrolling (FL conventions): wheel = vertical (pitch),
+        # Shift+wheel = horizontal (time), middle-drag = pan both.
+        from .scroll import bind_wheel, bind_middle_pan
+        bind_wheel(self._canvas,
+                   xscroll=lambda n: self._canvas.xview_scroll(n, "units"),
+                   yscroll=lambda n: self._canvas.yview_scroll(n, "units"))
+        bind_middle_pan(self._canvas)
         # All rendering goes through the painter (state/interaction stay here).
         self._painter = PianoRollPainter(self._canvas)
 

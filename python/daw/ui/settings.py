@@ -31,7 +31,8 @@ class Settings(ttk.Frame):
                  get_refresh, on_refresh, get_plugin_dir, on_plugin_dir,
                  get_multithreaded, on_multithreaded,
                  get_audio_devices, get_audio_selection, on_audio_output,
-                 get_buffer_frames, on_buffer_frames):
+                 get_buffer_frames, on_buffer_frames,
+                 get_input_devices, get_input_selection, on_audio_input):
         """on_scale(factor): apply a UI scale.
         on_reset_layout(): restore the default workspace layout.
         get_confirm()/on_confirm(bool): unsaved-changes prompt preference.
@@ -45,6 +46,10 @@ class Settings(ttk.Frame):
         on_audio_output(host_id, device_name): apply a new output choice.
         get_buffer_frames()/on_buffer_frames(frames): audio buffer size in
             frames; None = driver default.
+        get_input_devices()/get_input_selection()/on_audio_input(...):
+            the same trio for the *input* device (FL Studio's separate
+            Input selector). Selecting an input only records the choice;
+            no input stream is opened in this version.
         """
         super().__init__(master)
         self._on_scale = on_scale
@@ -133,6 +138,26 @@ class Settings(ttk.Frame):
         self._audio_devices = []
         self.refresh_audio_devices()
         self.sync_audio_selection(get_audio_selection())
+
+        # Audio input device (FL Studio's separate Input selector).
+        # Selecting an input only records the choice for now; no input
+        # stream is opened in this version.
+        self._on_audio_input = on_audio_input
+        self._get_input_devices = get_input_devices
+        ttk.Label(audio, text="Audio input:").pack(anchor="w", pady=(8, 0))
+        self._input_var = tk.StringVar()
+        self._input_combo = ttk.Combobox(audio, textvariable=self._input_var,
+                                         state="readonly", width=28)
+        self._input_combo.pack(anchor="w", pady=(2, 0))
+        self._input_combo.bind("<<ComboboxSelected>>",
+                               lambda _e: self._audio_input_chosen())
+        Tooltip(self._input_combo,
+                "Input device (microphone / line-in).\n"
+                "The choice is saved for future recording support;\n"
+                "no audio input is captured in this version.")
+        self._input_devices = []
+        self.refresh_input_devices()
+        self.sync_input_selection(get_input_selection())
 
         # Buffer size: the real-time lever (FL "Buffer length" analog).
         # Bigger buffer = more time per block (fewer underruns) at the
@@ -329,6 +354,43 @@ class Settings(ttk.Frame):
     def _audio_device_chosen(self) -> None:
         host_id, device_name = self._current_selection()
         self._on_audio_output(host_id, device_name)
+
+    # -- audio input ------------------------------------------------------
+
+    def refresh_input_devices(self) -> None:
+        """Re-scan input devices and rebuild the input dropdown."""
+        try:
+            self._input_devices = list(self._get_input_devices())
+        except Exception:
+            self._input_devices = []
+        labels = [self._SYS_DEFAULT] + [
+            self._device_display(d) for d in self._input_devices]
+        cur = self._input_var.get()
+        self._input_combo["values"] = labels
+        self._input_var.set(cur if cur in labels else self._SYS_DEFAULT)
+
+    def sync_input_selection(self, selection) -> None:
+        """Set the input dropdown to (host_id, device_name); None = default."""
+        host_id, device_name = selection
+        label = self._SYS_DEFAULT
+        if host_id is not None or device_name is not None:
+            for dev in self._input_devices:
+                if dev["host_id"] == host_id and \
+                        dev["device_name"] == device_name:
+                    label = self._device_display(dev)
+                    break
+        self._input_var.set(label)
+
+    def _audio_input_chosen(self) -> None:
+        label = self._input_var.get()
+        host_id, device_name = None, None
+        if label != self._SYS_DEFAULT:
+            for dev in self._input_devices:
+                if self._device_display(dev) == label:
+                    host_id, device_name = (dev["host_id"],
+                                            dev["device_name"])
+                    break
+        self._on_audio_input(host_id, device_name)
 
     # -- buffer size --------------------------------------------------------
 

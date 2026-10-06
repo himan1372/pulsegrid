@@ -104,6 +104,10 @@ class Playlist(ttk.Frame):
         self._ruler = tk.Canvas(right, height=RULER_H, bg="#0d1117",
                                 highlightthickness=0)
         self._ruler.pack(side="top", fill="x")
+        from .scroll import bind_wheel as _bind_wheel
+        _bind_wheel(self._ruler,
+                    xscroll=lambda n: self._ruler.xview_scroll(n, "units"),
+                    wheel_is_horizontal=True)
 
         lanes = ttk.Frame(right)
         lanes.pack(side="top", fill="both", expand=True)
@@ -173,6 +177,14 @@ class Playlist(ttk.Frame):
                 cv.bind("<Double-Button-1>", lambda e, t=track: self._double(e, t))
                 cv.bind("<Button-3>", lambda e, t=track: self._right_click(e, t))
                 cv.bind("<Delete>", lambda _e: self._delete_selected())
+                # Wheel scrolling (FL conventions): the timeline's scrollable
+                # axis is horizontal, so the wheel scrolls time here;
+                # Shift+wheel also scrolls time; middle-drag pans.
+                from .scroll import bind_wheel, bind_middle_pan
+                bind_wheel(cv,
+                           xscroll=lambda n, c=cv: c.xview_scroll(n, "units"),
+                           wheel_is_horizontal=True)
+                bind_middle_pan(cv)
                 self._canvases[track.id] = cv
 
             self._layout_scroll()
@@ -481,6 +493,16 @@ class Playlist(ttk.Frame):
             tag = ("clip-" if self._drag["kind"] == "clip"
                    else "aclip-") + str(self._drag["clip_index"])
             cv.move(tag, dx_px, 0)
+            # Keep the retained geometry cache in sync with the direct
+            # canvas move. A refresh() landing mid-drag (resize, undo,
+            # playhead lane rebuild) diffs the cache: if the cache still
+            # held the pre-move geometry, the delete+redraw would briefly
+            # show the clip at two positions -- the "stretched ghost"
+            # artifact reported on Windows (v0.43.0).
+            cached = self._lane_cache(track.id).get(tag)
+            if cached is not None:
+                cached.x0 += dx_px
+                cached.x1 += dx_px
 
     def _drag_end(self, event, track) -> None:
         if not self._drag or self._drag["track_id"] != track.id:

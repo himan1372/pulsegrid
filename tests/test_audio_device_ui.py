@@ -47,6 +47,9 @@ def panel():
             on_audio_output=lambda h, d: calls.append((h, d)),
             get_buffer_frames=lambda: None,
             on_buffer_frames=lambda f: calls.append(("buffer", f)),
+            get_input_devices=lambda: [],
+            get_input_selection=lambda: (None, None),
+            on_audio_input=lambda h, d: calls.append(("input", h, d)),
         )
         s.pack(fill="both", expand=True)
         root.update()
@@ -127,6 +130,9 @@ def test_empty_device_list_is_honest(panel):
             on_audio_output=lambda h, d: None,
             get_buffer_frames=lambda: None,
             on_buffer_frames=lambda f: None,
+            get_input_devices=lambda: [],
+            get_input_selection=lambda: (None, None),
+            on_audio_input=lambda h, d: None,
         )
         root.update()
         assert list(s._host_combo["values"]) == ["System default"]
@@ -271,5 +277,71 @@ def test_debug_window_perf_section():
         assert "Buffer load:" in win._perf_load.cget("text")
         app.stop()
         win.destroy()
+    finally:
+        root.destroy()
+
+
+FAKE_INPUTS = [
+    {"host_id": "WASAPI", "host_name": "WASAPI",
+     "device_name": "Microphone Array", "is_default": True},
+    {"host_id": "WASAPI", "host_name": "WASAPI",
+     "device_name": "Line In", "is_default": False},
+]
+
+
+@needs_display
+def test_input_dropdown_lists_devices(panel):
+    s, _calls = panel
+    # panel fixture has no input devices; drive the methods directly
+    s._get_input_devices = lambda: list(FAKE_INPUTS)
+    s.refresh_input_devices()
+    vals = list(s._input_combo["values"])
+    assert vals[0] == "System default"
+    assert any("Microphone Array" in v for v in vals)
+    assert any("Line In" in v for v in vals)
+
+
+@needs_display
+def test_input_dropdown_applies_selection(panel):
+    s, calls = panel
+    s._get_input_devices = lambda: list(FAKE_INPUTS)
+    s.refresh_input_devices()
+    s.sync_input_selection((None, None))
+    assert s._input_var.get() == "System default"
+    s._input_var.set("Line In")
+    s._audio_input_chosen()
+    assert calls[-1] == ("input", "WASAPI", "Line In")
+    s.sync_input_selection(("WASAPI", "Line In"))
+    assert s._input_var.get() == "Line In"
+    s.sync_input_selection((None, None))
+    assert s._input_var.get() == "System default"
+
+
+@needs_display
+def test_input_bridge_roundtrip_and_persistence():
+    import tkinter as tk
+
+    from daw.ui.app import PulsegridApp
+
+    root = tk.Tk()
+    try:
+        app = PulsegridApp(root)
+        root.update()
+        # Start from a known state (layout.json may persist a choice
+        # from an earlier run -- persistence is what we are testing).
+        app.engine.set_audio_input(None, None)
+        assert app.engine.audio_input() == (None, None)
+        # Input enumeration never raises, even with no hardware.
+        devs = app.engine.audio_input_devices()
+        assert isinstance(devs, list)
+        app._on_audio_input("WASAPI", "Microphone Array")
+        root.update()
+        assert app.engine.audio_input() == ("WASAPI", "Microphone Array")
+        import json
+        from daw.ui.app import _layout_path
+        layout = json.load(open(_layout_path()))
+        assert layout["audio_input_host"] == "WASAPI"
+        assert layout["audio_input_device"] == "Microphone Array"
+        app.engine.set_audio_input(None, None)
     finally:
         root.destroy()
