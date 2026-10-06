@@ -76,3 +76,29 @@ def test_check_vst3_missing_plugin_fails():
     eng = EngineBridge()
     with pytest.raises(EngineError):
         eng.check_vst3_plugin("/nonexistent/fake.vst3")
+
+
+def test_vst3_generator_roundtrip():
+    """VST3 generator serializes with type 'vst3' and format preserved."""
+    from daw.project import Generator
+    gen = Generator.vst3("absynth5", "C:/Program Files/Common Files/VST3/Absynth 5.vst3",
+                         {"0": 0.5, "1": 0.25})
+    assert gen.format == "vst3"
+    d = gen.to_dict()
+    assert d["type"] == "vst3"
+    assert d["plugin_id"] == "absynth5"
+    gen2 = Generator.from_dict(d)
+    assert gen2.format == "vst3"
+    assert gen2.params == {"0": 0.5, "1": 0.25}
+    # Engine params use the vst3 type.
+    ep = gen.engine_params()
+    assert ep["type"] == "vst3"
+
+
+def test_clap_generator_unchanged():
+    """CLAP generators still serialize with type 'plugin'."""
+    from daw.project import Generator
+    gen = Generator.plugin("com.test.synth", "/tmp/test.clap", {"11": 0.5})
+    assert gen.format == "clap"
+    assert gen.to_dict()["type"] == "plugin"
+    assert gen.engine_params()["type"] == "plugin"

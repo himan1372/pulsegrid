@@ -666,16 +666,18 @@ class Effect:
 class Generator:
     """A track's sound source. None (on the track) = built-in voices.
 
-    Currently only plugin instruments (CLAP) are supported as generators.
-    `params` maps str(CLAP param id) -> value in the plugin's real units.
-    `state_base64` is the plugin's opaque CLAP state blob, Base64-encoded
-    for the JSON project (authoritative when the plugin accepts it).
+    Plugin instruments (CLAP or VST3) are supported as generators.
+    `params` maps str(param id) -> value in the plugin's real units
+    (VST3: normalized 0.0-1.0). `state_base64` is the plugin's opaque
+    state blob, Base64-encoded for the JSON project (CLAP only in v1).
+    `format` is "clap" or "vst3".
     """
 
     plugin_id: str = ""
     plugin_path: str = ""
     params: dict = field(default_factory=dict)
     state_base64: str = ""
+    format: str = "clap"
 
     @classmethod
     def plugin(cls, plugin_id: str, plugin_path: str,
@@ -683,7 +685,17 @@ class Generator:
         """Create a plugin generator with CLAP param values."""
         return cls(plugin_id=plugin_id, plugin_path=plugin_path,
                    params={str(int(k)): float(v)
-                           for k, v in params.items()})
+                           for k, v in params.items()},
+                   format="clap")
+
+    @classmethod
+    def vst3(cls, plugin_id: str, plugin_path: str,
+             params: dict) -> "Generator":
+        """Create a VST3 plugin generator (normalized 0.0-1.0 params)."""
+        return cls(plugin_id=plugin_id, plugin_path=plugin_path,
+                   params={str(int(k)): float(v)
+                           for k, v in params.items()},
+                   format="vst3")
 
     def validate(self) -> None:
         if not self.plugin_id:
@@ -706,14 +718,14 @@ class Generator:
 
     def engine_params(self) -> dict:
         """Convert to the engine's generator dict."""
-        return {"type": "plugin",
+        return {"type": "vst3" if self.format == "vst3" else "plugin",
                 "plugin_id": self.plugin_id,
                 "plugin_path": self.plugin_path,
                 "params": {k: float(v) for k, v in self.params.items()},
                 "state_base64": self.state_base64}
 
     def to_dict(self) -> dict:
-        d = {"type": "plugin",
+        d = {"type": "vst3" if self.format == "vst3" else "plugin",
              "plugin_id": self.plugin_id,
              "plugin_path": self.plugin_path,
              "params": {k: float(v) for k, v in self.params.items()}}
@@ -725,12 +737,14 @@ class Generator:
     def from_dict(cls, data: dict) -> "Generator":
         if not isinstance(data, dict):
             raise ProjectError("generator entry must be an object")
-        if data.get("type", "plugin") != "plugin":
+        if data.get("type", "plugin") not in ("plugin", "vst3"):
             raise ProjectError(
                 f"unsupported generator type '{data.get('type')}'")
         try:
+            fmt = "vst3" if data.get("type") == "vst3" else "clap"
             gen = cls(plugin_id=str(data["plugin_id"]),
                       plugin_path=str(data["plugin_path"]),
+                      format=fmt,
                       params={str(k): float(v)
                               for k, v in data.get("params", {}).items()},
                       state_base64=str(data.get("state_base64", "")))

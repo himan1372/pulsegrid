@@ -466,6 +466,14 @@ class EngineBridge:
         except Exception as e:
             raise EngineError(str(e)) from e
 
+    def check_vst3_instrument(self, path: str) -> None:
+        """Fully load-test a VST3 plugin as an instrument (stereo out,
+        MIDI notes); raises EngineError on failure."""
+        try:
+            self._eng.check_vst3_instrument(path)
+        except Exception as e:
+            raise EngineError(str(e)) from e
+
     def clap_plugin_params(self, path: str, plugin_id: str) -> list:
         """List a plugin's parameters (control thread)."""
         return self._eng.clap_plugin_params(path, plugin_id)

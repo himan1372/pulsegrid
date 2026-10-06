@@ -656,6 +656,8 @@ pub struct GeneratorParams {
     pub params: Vec<(u32, f64)>,
     /// Opaque CLAP state blob (Base64-decoded by the bridge).
     pub state: Option<Vec<u8>>,
+    /// True for VST3 instruments, false for CLAP.
+    pub is_vst3: bool,
 }
 
 /// How a track's generator layers respond to note events (FL Layer-style).
@@ -1774,6 +1776,7 @@ mod tests {
                 path: "/tmp/test.clap".to_string(),
                 params: vec![(11, 0.5), (12, 0.01)],
                 state: None,
+                is_vst3: false,
             },
             gain: 1.0,
             pitch_offset: 0,
@@ -1802,6 +1805,7 @@ mod tests {
                 path: "/tmp/test.clap".to_string(),
                 params: vec![(11, 0.5)],
                 state: None,
+                is_vst3: false,
             },
             gain: 1.0,
             pitch_offset: 0,

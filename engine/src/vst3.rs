@@ -296,3 +296,143 @@ pub fn check_vst3_plugin(path: &Path) -> Result<(), String> {
     HostedVst3Plugin::load(path, 44100, &[])?;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Hosted instrument (generator) instance
+// ---------------------------------------------------------------------------
+
+/// A note event for a VST3 instrument.
+#[derive(Clone, Copy, Debug)]
+pub enum Vst3NoteEvent {
+    On { key: u8, velocity: f64 },
+    Off { key: u8 },
+}
+
+/// A running VST3 instrument: the loaded plugin plus scratch buffers.
+/// Takes MIDI note events, renders stereo audio. No audio input.
+pub struct HostedVst3Instrument {
+    plugin: Plugin,
+    pending: Vec<(u32, f64)>,
+    out_bufs: [Vec<f32>; 2],
+    latency: u32,
+    sample_rate: u32,
+}
+
+unsafe impl Send for HostedVst3Instrument {}
+
+impl HostedVst3Instrument {
+    /// Load, instantiate and start a VST3 instrument plugin.
+    pub fn load(path: &Path, sample_rate: u32, params: &[(u32, f64)]) -> Result<Self, String> {
+        let mut host = Vst3Host::builder()
+            .sample_rate(sample_rate as f64)
+            .block_size(crate::graph::MAX_BLOCK_FRAMES as usize)
+            .build()
+            .map_err(|e| format!("cannot create VST3 host: {:?}", e))?;
+
+        let mut plugin = host
+            .load_plugin(path.to_string_lossy().as_ref())
+            .map_err(|e| format!("cannot load VST3 '{}': {:?}", path.display(), e))?;
+
+        // Require stereo output. Input is optional.
+        {
+            let arrangements = plugin
+                .bus_arrangements()
+                .map_err(|e| format!("cannot query buses: {:?}", e))?;
+            let stereo_out = arrangements
+                .outputs
+                .iter()
+                .any(|b| b.channel_count() == 2);
+            if !stereo_out {
+                return Err(format!(
+                    "VST3 '{}': only stereo output is supported",
+                    path.display()
+                ));
+            }
+        }
+
+        for (id, value) in params {
+            let v = (*value).clamp(0.0, 1.0);
+            plugin
+                .set_parameter(*id, v)
+                .map_err(|e| format!("cannot set param {}: {:?}", id, e))?;
+        }
+
+        let latency = plugin.latency_samples();
+        plugin
+            .start_processing()
+            .map_err(|e| format!("cannot start VST3 '{}': {:?}", path.display(), e))?;
+
+        Ok(Self {
+            plugin,
+            pending: Vec::new(),
+            out_bufs: [Vec::new(), Vec::new()],
+            latency,
+            sample_rate,
+        })
+    }
+
+    pub fn queue_param(&mut self, id: u32, value: f64) {
+        if let Some(slot) = self.pending.iter_mut().find(|(pid, _)| *pid == id) {
+            slot.1 = value;
+        } else {
+            self.pending.push((id, value));
+        }
+    }
+
+    /// Render one block: `notes` are note on/off events, `out` receives
+    /// interleaved stereo (must hold at least frames*2).
+    pub fn process_notes(&mut self, notes: &[Vst3NoteEvent], out: &mut [f32]) {
+        let frames = out.len() / 2;
+        if frames == 0 {
+            return;
+        }
+
+        // Send MIDI notes.
+        use vst3_host::midi::MidiChannel;
+        for note in notes {
+            match *note {
+                Vst3NoteEvent::On { key, velocity } => {
+                    let vel = (velocity.clamp(0.0, 1.0) * 127.0) as u8;
+                    let _ = self.plugin.send_midi_note(key, vel, MidiChannel::Ch1);
+                }
+                Vst3NoteEvent::Off { key } => {
+                    let _ = self.plugin.send_midi_note_off(key, MidiChannel::Ch1);
+                }
+            }
+        }
+
+        // Flush queued parameter changes.
+        for (id, value) in self.pending.drain(..) {
+            let v = value.clamp(0.0, 1.0);
+            let _ = self.plugin.set_parameter(id, v);
+        }
+
+        // Instruments have no audio input; render silence in.
+        let mut buffers = AudioBuffers::new(0, 2, frames, self.sample_rate as f64);
+        if self.plugin.process_audio(&mut buffers).is_err() {
+            // On failure, output silence.
+            for s in out.iter_mut() {
+                *s = 0.0;
+            }
+            return;
+        }
+
+        for ch in 0..2 {
+            for (i, s) in buffers.outputs[ch][..frames].iter().enumerate() {
+                out[2 * i + ch] = *s;
+            }
+        }
+    }
+
+    pub fn latency_samples(&self) -> u32 {
+        self.latency
+    }
+}
+
+/// Scan for VST3 instrument plugins (same locations; the host filters
+/// by trying to load as an instrument).
+pub fn scan_vst3_instruments() -> Vec<HashMap<String, String>> {
+    // For v1, instruments are the same .vst3 files; the distinction is
+    // made at load time (stereo out required, MIDI capable).
+    scan_vst3_plugins()
+}

@@ -24,10 +24,50 @@ use crate::timeline::{
     AudioClipEvent, AutoCurve, AutoParam, GeneratorLayerParams, LayerMode,
     SendData, SendTap, TrackEvent, TrackParams,
 };
+use crate::vst3::{HostedVst3Instrument, Vst3NoteEvent};
 
-/// A hosted generator layer: the CLAP instrument plus per-layer mix settings.
+/// A hosted instrument plugin (CLAP or VST3).
+enum HostedInstrument {
+    Clap(HostedClapInstrument),
+    Vst3(HostedVst3Instrument),
+}
+
+impl HostedInstrument {
+    fn process_notes(&mut self, notes: &[InstrumentNoteEvent], out: &mut [f32]) {
+        match self {
+            HostedInstrument::Clap(p) => p.process_notes(notes, out),
+            HostedInstrument::Vst3(p) => {
+                // Convert to VST3 MIDI note events.
+                let vst3_notes: Vec<Vst3NoteEvent> = notes
+                    .iter()
+                    .filter_map(|n| match *n {
+                        InstrumentNoteEvent::On { key, velocity, .. } => {
+                            Some(Vst3NoteEvent::On { key, velocity })
+                        }
+                        InstrumentNoteEvent::Off { key, .. } => {
+                            Some(Vst3NoteEvent::Off { key })
+                        }
+                        InstrumentNoteEvent::Choke { key, .. } => {
+                            Some(Vst3NoteEvent::Off { key })
+                        }
+                    })
+                    .collect();
+                p.process_notes(&vst3_notes, out);
+            }
+        }
+    }
+
+    fn queue_param(&mut self, id: u32, value: f64) {
+        match self {
+            HostedInstrument::Clap(p) => p.queue_param(id, value),
+            HostedInstrument::Vst3(p) => p.queue_param(id, value),
+        }
+    }
+}
+
+/// A hosted generator layer: the instrument plugin plus per-layer mix settings.
 struct HostedGeneratorLayer {
-    plugin: HostedClapInstrument,
+    plugin: HostedInstrument,
     gain: f32,
     pitch_offset: i32,
     enabled: bool,
@@ -225,34 +265,48 @@ impl TrackStrip {
             .iter()
             .enumerate()
             .filter_map(|(li, l)| {
-                HostedClapInstrument::load(
-                    std::path::Path::new(&l.generator.path),
-                    &l.generator.plugin_id,
-                    sample_rate,
-                    &l.generator.params,
-                    l.generator.state.as_deref(),
-                    Some(crate::plugins::PluginSlotKey::Instrument {
-                        track: track_idx,
-                        layer: li,
-                    }),
-                    &sink.events,
-                )
-                .ok()
-                .map(|(plugin, instance)| {
-                    sink.push(
-                        crate::plugins::PluginSlotKey::Instrument {
+                let path = std::path::Path::new(&l.generator.path);
+                if l.generator.is_vst3 {
+                    // VST3 instrument.
+                    HostedVst3Instrument::load(path, sample_rate, &l.generator.params)
+                        .ok()
+                        .map(|plugin| HostedGeneratorLayer {
+                            plugin: HostedInstrument::Vst3(plugin),
+                            gain: l.gain,
+                            pitch_offset: l.pitch_offset,
+                            enabled: l.enabled,
+                        })
+                } else {
+                    // CLAP instrument.
+                    HostedClapInstrument::load(
+                        path,
+                        &l.generator.plugin_id,
+                        sample_rate,
+                        &l.generator.params,
+                        l.generator.state.as_deref(),
+                        Some(crate::plugins::PluginSlotKey::Instrument {
                             track: track_idx,
                             layer: li,
-                        },
-                        instance,
-                    );
-                    HostedGeneratorLayer {
-                        plugin,
-                        gain: l.gain,
-                        pitch_offset: l.pitch_offset,
-                        enabled: l.enabled,
-                    }
-                })
+                        }),
+                        &sink.events,
+                    )
+                    .ok()
+                    .map(|(plugin, instance)| {
+                        sink.push(
+                            crate::plugins::PluginSlotKey::Instrument {
+                                track: track_idx,
+                                layer: li,
+                            },
+                            instance,
+                        );
+                        HostedGeneratorLayer {
+                            plugin: HostedInstrument::Clap(plugin),
+                            gain: l.gain,
+                            pitch_offset: l.pitch_offset,
+                            enabled: l.enabled,
+                        }
+                    })
+                }
             })
             .collect();
         TrackStrip {
@@ -335,34 +389,46 @@ impl TrackStrip {
             .iter()
             .enumerate()
             .filter_map(|(li, l)| {
-                HostedClapInstrument::load(
-                    std::path::Path::new(&l.generator.path),
-                    &l.generator.plugin_id,
-                    self.sample_rate,
-                    &l.generator.params,
-                    l.generator.state.as_deref(),
-                    Some(crate::plugins::PluginSlotKey::Instrument {
-                        track: track_idx,
-                        layer: li,
-                    }),
-                    &sink.events,
-                )
-                .ok()
-                .map(|(plugin, instance)| {
-                    sink.push(
-                        crate::plugins::PluginSlotKey::Instrument {
+                let path = std::path::Path::new(&l.generator.path);
+                if l.generator.is_vst3 {
+                    HostedVst3Instrument::load(path, self.sample_rate, &l.generator.params)
+                        .ok()
+                        .map(|plugin| HostedGeneratorLayer {
+                            plugin: HostedInstrument::Vst3(plugin),
+                            gain: l.gain,
+                            pitch_offset: l.pitch_offset,
+                            enabled: l.enabled,
+                        })
+                } else {
+                    HostedClapInstrument::load(
+                        path,
+                        &l.generator.plugin_id,
+                        self.sample_rate,
+                        &l.generator.params,
+                        l.generator.state.as_deref(),
+                        Some(crate::plugins::PluginSlotKey::Instrument {
                             track: track_idx,
                             layer: li,
-                        },
-                        instance,
-                    );
-                    HostedGeneratorLayer {
-                        plugin,
-                        gain: l.gain,
-                        pitch_offset: l.pitch_offset,
-                        enabled: l.enabled,
-                    }
-                })
+                        }),
+                        &sink.events,
+                    )
+                    .ok()
+                    .map(|(plugin, instance)| {
+                        sink.push(
+                            crate::plugins::PluginSlotKey::Instrument {
+                                track: track_idx,
+                                layer: li,
+                            },
+                            instance,
+                        );
+                        HostedGeneratorLayer {
+                            plugin: HostedInstrument::Clap(plugin),
+                            gain: l.gain,
+                            pitch_offset: l.pitch_offset,
+                            enabled: l.enabled,
+                        }
+                    })
+                }
             })
             .collect();
         self.generator_layer_params = layers.to_vec();

@@ -104,9 +104,9 @@ fn parse_generator(v: Option<Bound<'_, PyAny>>) -> PyResult<Option<engine::RawGe
         .transpose()
         .map_err(|_| PyValueError::new_err("'generator.type' must be a string"))?
         .unwrap_or_default();
-    if kind != "plugin" {
+    if kind != "plugin" && kind != "vst3" {
         return Err(PyValueError::new_err(
-            "unsupported generator type (only 'plugin' is supported)",
+            "unsupported generator type (only 'plugin' and 'vst3' are supported)",
         ));
     }
     let plugin_id: String = d
@@ -142,6 +142,7 @@ fn parse_generator(v: Option<Bound<'_, PyAny>>) -> PyResult<Option<engine::RawGe
         plugin_id,
         path,
         params,
+        is_vst3: kind == "vst3",
     }))
 }
 
@@ -173,6 +174,7 @@ fn parse_generator_layers(t: &Bound<'_, PyDict>) -> PyResult<Vec<engine::RawGene
             pitch_offset: 0,
             enabled: true,
             state: None,
+            is_vst3: gen.is_vst3,
         }])
     } else {
         Ok(Vec::new())
@@ -210,9 +212,9 @@ fn parse_one_layer(l: &Bound<'_, PyDict>) -> PyResult<engine::RawGeneratorLayer>
         .transpose()
         .map_err(|_| PyValueError::new_err("'layer.type' must be a string"))?
         .unwrap_or_default();
-    if kind != "plugin" {
+    if kind != "plugin" && kind != "vst3" {
         return Err(PyValueError::new_err(
-            "unsupported generator type (only 'plugin' is supported)",
+            "unsupported generator type (only 'plugin' and 'vst3' are supported)",
         ));
     }
     let plugin_id: String = l
@@ -271,6 +273,7 @@ fn parse_one_layer(l: &Bound<'_, PyDict>) -> PyResult<engine::RawGeneratorLayer>
         pitch_offset,
         enabled,
         state,
+        is_vst3: kind == "vst3",
     })
 }
 
@@ -1118,6 +1121,20 @@ impl PyEngine {
     fn check_vst3_plugin(&self, path: &str) -> PyResult<()> {
         let sample_rate = self.inner.lock().map(|e| e.sample_rate()).unwrap_or(44100);
         crate::vst3::HostedVst3Plugin::load(
+            std::path::Path::new(path),
+            sample_rate,
+            &[],
+        )
+        .map(|_| ())
+        .map_err(err_to_py)
+    }
+
+    /// Fully load and start a VST3 plugin as an instrument (stereo out,
+    /// MIDI notes), then drop it. Used by the UI to validate a VST3
+    /// instrument *before* adding it as a generator layer.
+    fn check_vst3_instrument(&self, path: &str) -> PyResult<()> {
+        let sample_rate = self.inner.lock().map(|e| e.sample_rate()).unwrap_or(44100);
+        crate::vst3::HostedVst3Instrument::load(
             std::path::Path::new(path),
             sample_rate,
             &[],

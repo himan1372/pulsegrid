@@ -1149,6 +1149,7 @@ impl Engine {
                             path: l.path,
                             params: l.params,
                             state: l.state,
+                            is_vst3: l.is_vst3,
                         },
                         gain: l.gain,
                         pitch_offset: l.pitch_offset,
@@ -1251,6 +1252,8 @@ pub struct RawGeneratorLayer {
     pub enabled: bool,
     /// Opaque CLAP state blob (Base64-decoded by the bridge).
     pub state: Option<Vec<u8>>,
+    /// True for VST3 instruments, false for CLAP.
+    pub is_vst3: bool,
 }
 
 /// Raw generator from the bridge: plugin instrument or None.
@@ -1260,6 +1263,7 @@ pub struct RawGenerator {
     pub plugin_id: String,
     pub path: String,
     pub params: Vec<(u32, f64)>,
+    pub is_vst3: bool,
 }
 
 /// Raw effect from the bridge: kind + the union of all effect params

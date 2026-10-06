@@ -2482,8 +2482,11 @@ class PulsegridApp:
             return
         gen = track.generator_layers[layer_idx].generator
         try:
-            params = self.ensure_plugin_registered(gen.plugin_id,
-                                                   gen.plugin_path)
+            if gen.format == "vst3":
+                params = self.engine.vst3_plugin_params(gen.plugin_path)
+            else:
+                params = self.ensure_plugin_registered(gen.plugin_id,
+                                                       gen.plugin_path)
         except (EngineError, ProjectError) as e:
             show_error(self.root, "Cannot open instrument", str(e))
             return
@@ -2667,26 +2670,47 @@ class PulsegridApp:
         """Add a generator layer to the track (FL Layer-style)."""
         try:
             instruments = self.engine.scan_clap_instruments()
+            # VST3 instruments share the same scan; tag the format.
+            for v in self.engine.scan_vst3_plugins():
+                v = dict(v)
+                v.setdefault("format", "vst3")
+                instruments.append(v)
         except EngineError as e:
             show_error(self.root, "Scan failed", str(e))
             return
         if not instruments:
             show_error(self.root, "No instruments",
-                       "No CLAP instrument plugins were found.\n"
-                       "Set CLAP_PATH to a folder containing .clap files.")
+                       "No instrument plugins were found.\n\n"
+                       "CLAP: install a .clap plugin into ~/.clap (Linux)\n"
+                       "or set CLAP_PATH.\n"
+                       "VST3: install a .vst3 plugin into\n"
+                       "C:\\Program Files\\Common Files\\VST3 (Windows),\n"
+                       "~/.vst3 or /usr/lib/vst3 (Linux).")
             return
 
         def on_pick(plugin):
+            is_vst3 = plugin.get("format") == "vst3"
             try:
-                self.engine.check_clap_instrument(plugin["path"],
-                                                  plugin["id"])
-                params = self.ensure_plugin_registered(plugin["id"],
-                                                       plugin["path"])
+                if is_vst3:
+                    self.engine.check_vst3_instrument(plugin["path"])
+                    params = self.engine.vst3_plugin_params(plugin["path"])
+                    # Register display name + params for automation/validation.
+                    vst3_id = plugin.get("plugin_id", plugin["path"])
+                    register_plugin(vst3_id, plugin["name"], params)
+                else:
+                    self.engine.check_clap_instrument(plugin["path"],
+                                                      plugin["id"])
+                    params = self.ensure_plugin_registered(plugin["id"],
+                                                           plugin["path"])
             except (EngineError, ProjectError) as e:
                 show_error(self.root, "Cannot load instrument", str(e))
                 return
             defaults = {str(p["id"]): float(p["default"]) for p in params}
-            gen = Generator.plugin(plugin["id"], plugin["path"], defaults)
+            if is_vst3:
+                gen = Generator.vst3(plugin.get("plugin_id", plugin["path"]),
+                                     plugin["path"], defaults)
+            else:
+                gen = Generator.plugin(plugin["id"], plugin["path"], defaults)
             layer = GeneratorLayer(generator=gen)
 
             def mutate(project, tid=track_id, l=layer):
