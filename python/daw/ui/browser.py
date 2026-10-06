@@ -81,7 +81,7 @@ class Browser(ttk.Frame):
         self._body.pack(fill="both", expand=True)
         # Vertical scrolling for the section list (wheel = vertical).
         self._body_canvas = tk.Canvas(self._body, bg="#0d1117",
-                                      highlightthickness=0)
+                                      highlightthickness=0, borderwidth=0)
         _body_vscroll = ttk.Scrollbar(self._body, orient="vertical",
                                       command=self._body_canvas.yview)
         self._body_canvas.pack(side="left", fill="both", expand=True)
@@ -227,7 +227,7 @@ class Browser(ttk.Frame):
         row = ttk.Frame(parent, padding=(4, 3))
         row.pack(fill="x")
         dot = tk.Canvas(row, width=10, height=10, bg="#161b22",
-                        highlightthickness=0)
+                        highlightthickness=0, borderwidth=0)
         dot.pack(side="left", padx=(2, 6))
         dot.create_oval(1, 1, 9, 9, fill=color, outline="")
         label = ttk.Label(row, text=text)
@@ -281,7 +281,7 @@ class Browser(ttk.Frame):
                          command=lambda e=entry_: self._toggle_favorite(e))
         star.pack(side="left", padx=(0, 4))
         dot = tk.Canvas(row, width=10, height=10, bg="#161b22",
-                        highlightthickness=0)
+                        highlightthickness=0, borderwidth=0)
         dot.pack(side="left", padx=(2, 6))
         dot.create_oval(1, 1, 9, 9,
                         fill=self._PRESET_COLORS.get(entry_.kind, "#8b949e"),

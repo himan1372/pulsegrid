@@ -87,7 +87,7 @@ class Mixer(ttk.Frame):
         body = ttk.Frame(self)
         body.pack(fill="both", expand=True)
 
-        self._canvas = tk.Canvas(body, bg="#0d1117", highlightthickness=0,
+        self._canvas = tk.Canvas(body, bg="#0d1117", highlightthickness=0, borderwidth=0,
                                  height=360)
         self._canvas.pack(side="left", fill="both", expand=True)
         vscroll = ttk.Scrollbar(body, orient="vertical",
@@ -165,7 +165,7 @@ class Mixer(ttk.Frame):
             amt_var = tk.DoubleVar(value=send.amount * 100)
             scale = tk.Scale(row, from_=0, to=100, orient="horizontal",
                              variable=amt_var, length=70, showvalue=False,
-                             bg="#161b22", highlightthickness=0)
+                             bg="#161b22", highlightthickness=0, borderwidth=0)
             scale.pack(side="left", padx=2)
             amt_label = ttk.Label(row, text=f"{send.amount*100:.0f}%", width=5)
             amt_label.pack(side="left")
@@ -191,7 +191,7 @@ class Mixer(ttk.Frame):
             pan_var = tk.DoubleVar(value=send.pan * 100)
             pan_scale = tk.Scale(row, from_=-100, to=100, orient="horizontal",
                                  variable=pan_var, length=50, showvalue=False,
-                                 bg="#161b22", highlightthickness=0)
+                                 bg="#161b22", highlightthickness=0, borderwidth=0)
             pan_scale.pack(side="left", padx=1)
             pan_scale.bind("<ButtonRelease-1>",
                            lambda _e, t=track, d=send.to_track_id,
@@ -388,7 +388,7 @@ class Mixer(ttk.Frame):
         pres = build_strip_presentations([track])[0]
         geo = strip_geometry(pres)
         accent_bar = tk.Canvas(strip, height=geo["accent_bar_height"],
-                               bg=geo["accent_color"], highlightthickness=0)
+                               bg=geo["accent_color"], highlightthickness=0, borderwidth=0)
         accent_bar.pack(fill="x", pady=(0, 6))
 
         name_row = ttk.Frame(strip)
@@ -444,11 +444,11 @@ class Mixer(ttk.Frame):
         vol_row.pack()
         vol = tk.Scale(vol_row, from_=200, to=0, orient="vertical",
                        variable=vol_var, length=110, showvalue=False,
-                       bg="#161b22", fg="#e6edf3", highlightthickness=0)
+                       bg="#161b22", fg="#e6edf3", highlightthickness=0, borderwidth=0)
         vol.pack(side="left")
         # Live level meter (driven by engine peaks via set_levels).
         meter = tk.Canvas(vol_row, width=10, height=110, bg="#0d1117",
-                          highlightthickness=0)
+                          highlightthickness=0, borderwidth=0)
         meter.pack(side="left", padx=(4, 0))
         Tooltip(meter, "Output level")
         vol.bind("<ButtonRelease-1>",
@@ -558,7 +558,7 @@ class Mixer(ttk.Frame):
             vt_scale = tk.Scale(vt_row, from_=-100, to=100,
                                 orient="horizontal", variable=vt_var,
                                 length=64, showvalue=False,
-                                bg="#161b22", highlightthickness=0)
+                                bg="#161b22", highlightthickness=0, borderwidth=0)
             vt_scale.pack(side="left", padx=2)
             vt_label = ttk.Label(vt_row,
                                  text=f"{track.vel_track * 100:+.0f}%",
@@ -568,7 +568,7 @@ class Mixer(ttk.Frame):
             vtm_scale = tk.Scale(vt_row, from_=0, to=100,
                                  orient="horizontal", variable=vtm_var,
                                  length=44, showvalue=False,
-                                 bg="#161b22", highlightthickness=0)
+                                 bg="#161b22", highlightthickness=0, borderwidth=0)
             vtm_scale.pack(side="left", padx=(2, 0))
             vtm_label = ttk.Label(vt_row,
                                   text=f"{track.vel_track_mid * 100:.0f}",
@@ -614,7 +614,7 @@ class Mixer(ttk.Frame):
             kt_scale = tk.Scale(kt_row, from_=-100, to=100,
                                 orient="horizontal", variable=kt_var,
                                 length=64, showvalue=False,
-                                bg="#161b22", highlightthickness=0)
+                                bg="#161b22", highlightthickness=0, borderwidth=0)
             kt_scale.pack(side="left", padx=2)
             kt_label = ttk.Label(kt_row,
                                  text=f"{track.key_track * 100:+.0f}%",
@@ -624,7 +624,7 @@ class Mixer(ttk.Frame):
             ktm_scale = tk.Scale(kt_row, from_=0, to=127,
                                  orient="horizontal", variable=ktm_var,
                                  length=44, showvalue=False,
-                                 bg="#161b22", highlightthickness=0)
+                                 bg="#161b22", highlightthickness=0, borderwidth=0)
             ktm_scale.pack(side="left", padx=(2, 0))
             ktm_label = ttk.Label(kt_row,
                                   text=_midi_note_name(track.key_track_mid),
@@ -838,7 +838,7 @@ class Mixer(ttk.Frame):
             val_label.configure(text=fmt(val))
             sc = tk.Scale(row, from_=lo, to=hi, orient="horizontal",
                           variable=var, showvalue=False,
-                          bg="#161b22", fg="#e6edf3", highlightthickness=0)
+                          bg="#161b22", fg="#e6edf3", highlightthickness=0, borderwidth=0)
             sc.pack(side="left", fill="x", expand=True)
             sc.bind("<ButtonRelease-1>",
                     lambda _e, t=track, i=index, p=param, v=var, lab=val_label,

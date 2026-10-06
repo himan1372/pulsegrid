@@ -134,7 +134,7 @@ class PluginParamDialog(tk.Toplevel):
 
         body = ttk.Frame(self, padding=10)
         body.pack(fill="both", expand=True)
-        canvas = tk.Canvas(body, highlightthickness=0)
+        canvas = tk.Canvas(body, highlightthickness=0, borderwidth=0)
         sb = ttk.Scrollbar(body, orient="vertical", command=canvas.yview)
         inner = ttk.Frame(canvas)
         inner.bind("<Configure>",
@@ -166,7 +166,7 @@ class PluginParamDialog(tk.Toplevel):
             var = tk.DoubleVar(value=cur)
             sc = tk.Scale(row, from_=lo, to=hi, orient="horizontal",
                           variable=var, showvalue=False, resolution=(hi - lo) / 1000.0,
-                          bg="#161b22", fg="#e6edf3", highlightthickness=0)
+                          bg="#161b22", fg="#e6edf3", highlightthickness=0, borderwidth=0)
             sc.pack(side="left", fill="x", expand=True, padx=6)
             sc.bind("<ButtonRelease-1>",
                     lambda _e, i=pid, v=var, lab=val_label:

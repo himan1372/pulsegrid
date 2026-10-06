@@ -132,7 +132,7 @@ class PianoRoll(ttk.Frame):
 
         body = ttk.Frame(self)
         body.pack(side="top", fill="both", expand=True)
-        self._canvas = tk.Canvas(body, bg="#0d1117", highlightthickness=0)
+        self._canvas = tk.Canvas(body, bg="#0d1117", highlightthickness=0, borderwidth=0)
         self._canvas.pack(side="left", fill="both", expand=True)
         scroll = ttk.Scrollbar(body, orient="vertical",
                                command=self._canvas.yview)

@@ -49,7 +49,7 @@ class Sequencer(ttk.Frame):
         self.headers.pack(side="left", fill="y")
 
         # Grid canvas
-        self.canvas = tk.Canvas(self, bg=GRID_BG, highlightthickness=0)
+        self.canvas = tk.Canvas(self, bg=GRID_BG, highlightthickness=0, borderwidth=0)
         self.canvas.pack(side="left", fill="both", expand=True)
         self.canvas.bind("<Button-1>", self._on_click)
         self.canvas.bind("<Configure>", lambda _e: self._draw())
@@ -79,7 +79,7 @@ class Sequencer(ttk.Frame):
             row._pulsegrid_channel_id = ch.id
             color = INSTRUMENT_COLORS.get(ch.instrument, "#8b949e")
             dot = tk.Canvas(row, width=12, height=12, bg="#161b22",
-                            highlightthickness=0)
+                            highlightthickness=0, borderwidth=0)
             dot.pack(side="left", padx=(8, 4))
             dot.create_oval(1, 1, 11, 11, fill=color, outline=color)
             ttk.Label(row, text=ch.name, width=7, font=("", 10, "bold")).pack(side="left")

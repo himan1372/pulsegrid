@@ -102,7 +102,7 @@ class Playlist(ttk.Frame):
         right.pack(side="left", fill="both", expand=True)
 
         self._ruler = tk.Canvas(right, height=RULER_H, bg="#0d1117",
-                                highlightthickness=0)
+                                highlightthickness=0, borderwidth=0)
         self._ruler.pack(side="top", fill="x")
         from .scroll import bind_wheel as _bind_wheel
         _bind_wheel(self._ruler,
@@ -167,7 +167,7 @@ class Playlist(ttk.Frame):
 
             for track in new_tracks:
                 cv = tk.Canvas(self._lanes, height=ROW_H, bg="#0d1117",
-                               highlightthickness=0, xscrollincrement=1)
+                               highlightthickness=0, borderwidth=0, xscrollincrement=1)
                 cv.pack(fill="x")
                 # Drop target for Browser patterns.
                 cv._pulsegrid_track_id = track.id
@@ -208,7 +208,7 @@ class Playlist(ttk.Frame):
             geo = strip_geometry(pres)
             chip = tk.Canvas(hdr, width=geo["header_chip_width"],
                              height=ROW_H, bg=geo["accent_color"],
-                             highlightthickness=0)
+                             highlightthickness=0, borderwidth=0)
             chip.pack(side="left", fill="y", padx=(0, 4))
             name_lbl = ttk.Label(hdr, text=geo["name"], padding=(4, 2))
             name_lbl.pack(side="left", anchor="w")

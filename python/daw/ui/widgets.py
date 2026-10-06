@@ -25,6 +25,10 @@ class Tooltip:
         widget.bind("<Enter>", self._schedule, add="+")
         widget.bind("<Leave>", self._hide, add="+")
         widget.bind("<ButtonPress>", self._hide, add="+")
+        # If the widget dies while a tip is scheduled or visible, take
+        # the tip with it -- an orphaned overrideredirect Toplevel is a
+        # permanent on-screen artifact (Windows ghost-window reports).
+        widget.bind("<Destroy>", self._hide, add="+")
 
     def _schedule(self, _event=None) -> None:
         self._cancel()
@@ -42,6 +46,9 @@ class Tooltip:
         if Tooltip._active is not None:
             return
         try:
+            # Widget gone (or never mapped): never create an orphan tip.
+            if not self.widget.winfo_exists():
+                return
             x = self.widget.winfo_rootx() + 12
             y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
         except tk.TclError:
@@ -81,7 +88,7 @@ class Knob(tk.Canvas):
                  size: int = 48, on_change=None, on_commit=None,
                  format_value=None, **kwargs):
         super().__init__(master, width=size, height=size + 14,
-                         highlightthickness=0, bg="#161b22", **kwargs)
+                         highlightthickness=0, borderwidth=0, bg="#161b22", **kwargs)
         self.min_value = min_value
         self.max_value = max_value
         self.value = self._clamp(value)

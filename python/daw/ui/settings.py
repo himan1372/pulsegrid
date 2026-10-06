@@ -60,7 +60,31 @@ class Settings(ttk.Frame):
         ttk.Label(self, text="Settings", font=("", 10, "bold"),
                   padding=(8, 4)).pack(anchor="w")
 
-        display = ttk.LabelFrame(self, text="Display", padding=8)
+        # Scrollable content (the Audio section grew with the input
+        # selector; on short windows it would otherwise clip with no way
+        # to reach the lower sections).
+        self._canvas = tk.Canvas(self, bg="#0d1117", highlightthickness=0, borderwidth=0)
+        _vscroll = ttk.Scrollbar(self, orient="vertical",
+                                 command=self._canvas.yview)
+        self._canvas.pack(side="left", fill="both", expand=True)
+        _vscroll.pack(side="right", fill="y")
+        self._canvas.configure(yscrollcommand=_vscroll.set)
+        self._content = ttk.Frame(self._canvas)
+        self._content_win = self._canvas.create_window(
+            0, 0, window=self._content, anchor="nw")
+        self._content.bind(
+            "<Configure>",
+            lambda _e: self._canvas.configure(
+                scrollregion=self._canvas.bbox("all")))
+        self._canvas.bind(
+            "<Configure>",
+            lambda e: self._canvas.itemconfigure(
+                self._content_win, width=e.width))
+        from .scroll import bind_wheel
+        bind_wheel(self._canvas,
+                   yscroll=lambda n: self._canvas.yview_scroll(n, "units"))
+
+        display = ttk.LabelFrame(self._content, text="Display", padding=8)
         display.pack(fill="x", padx=8, pady=4)
         ttk.Label(display, text="UI scale:").pack(anchor="w")
         scale_row = ttk.Frame(display)
@@ -87,7 +111,7 @@ class Settings(ttk.Frame):
             Tooltip(rb, REFRESH_TIPS[mode])
 
         # Audio: multithreading (FL-style global switch).
-        audio = ttk.LabelFrame(self, text="Audio", padding=8)
+        audio = ttk.LabelFrame(self._content, text="Audio", padding=8)
         audio.pack(fill="x", padx=8, pady=4)
         self._mt_var = tk.BooleanVar(value=get_multithreaded())
         mt_chk = ttk.Checkbutton(
@@ -184,7 +208,7 @@ class Settings(ttk.Frame):
                 "Applies live (keeps playing); persists in layout.json.")
         self.sync_buffer_frames(get_buffer_frames())
 
-        workspace = ttk.LabelFrame(self, text="Workspace", padding=8)
+        workspace = ttk.LabelFrame(self._content, text="Workspace", padding=8)
         workspace.pack(fill="x", padx=8, pady=4)
         self._confirm_var = tk.BooleanVar(value=get_confirm())
         chk = ttk.Checkbutton(
@@ -199,7 +223,7 @@ class Settings(ttk.Frame):
         btn.pack(anchor="w", pady=(6, 0))
         Tooltip(btn, "Show all panels, reset sizes and UI scale")
 
-        plugins = ttk.LabelFrame(self, text="Plugins", padding=8)
+        plugins = ttk.LabelFrame(self._content, text="Plugins", padding=8)
         plugins.pack(fill="x", padx=8, pady=4)
         ttk.Label(plugins, text="CLAP plugin folder:").pack(anchor="w")
         self._plugin_dir_var = tk.StringVar(value=get_plugin_dir())

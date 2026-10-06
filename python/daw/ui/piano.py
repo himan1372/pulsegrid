@@ -32,7 +32,7 @@ class PianoKeyboard(ttk.Frame):
 
         # Piano canvas: 2 octaves = 14 white keys.
         self._canvas = tk.Canvas(self, height=120, bg="#0d1117",
-                                 highlightthickness=0)
+                                 highlightthickness=0, borderwidth=0)
         self._canvas.pack(fill="x", padx=8, pady=(8, 4))
         self._white_ids = {}  # pitch -> item id
         self._black_ids = {}

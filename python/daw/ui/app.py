@@ -88,6 +88,21 @@ def _apply_theme(root: tk.Tk) -> None:
                     background="#21262d", arrowcolor=fg)
     style.configure("TMenu", background=panel, foreground=fg)
     style.configure("TPanedwindow", background=panel)
+    # LabelFrames (Browser sections, Settings groups) must use the dark
+    # palette too -- the clam default border renders light/white on the
+    # dark background, reading as hollow "ghost" boxes (Windows artifact
+    # report, v0.44.0).
+    style.configure("TLabelframe", background=panel, foreground=fg,
+                    bordercolor="#30363d")
+    style.configure("TLabelframe.Label", background=panel, foreground=fg)
+    # Notebook tabs + scrollbars in the dark palette as well.
+    style.configure("TNotebook", background=bg, bordercolor="#30363d")
+    style.configure("TNotebook.Tab", background="#21262d", foreground=fg,
+                    padding=(10, 4))
+    style.map("TNotebook.Tab",
+              background=[("selected", panel), ("active", "#30363d")])
+    style.configure("TScrollbar", background="#21262d", troughcolor=bg,
+                    bordercolor=bg, arrowcolor=fg)
 
 
 def _layout_path() -> str:
@@ -1111,16 +1126,24 @@ class PulsegridApp:
         if self._dnd is None:
             return
         kind, payload = self._dnd["kind"], self._dnd["payload"]
-        target, tid, widget = self._dnd_target(event.x_root, event.y_root)
-        self._dnd["ghost"].destroy()
-        self._dnd = None
-        # Remove only the handlers this drag added.
-        for seq, fid in (("<Motion>", self._dnd_motion_id),
-                         ("<ButtonRelease-1>", self._dnd_release_id)):
+        # The ghost Toplevel must die even if targeting or the drop
+        # itself raises -- a leaked overrideredirect window is a permanent
+        # on-screen artifact (Windows ghost-window reports, v0.44.0).
+        try:
+            target, tid, widget = self._dnd_target(event.x_root, event.y_root)
+        finally:
             try:
-                self.root.unbind(seq, fid)
+                self._dnd["ghost"].destroy()
             except tk.TclError:
                 pass
+            self._dnd = None
+            # Remove only the handlers this drag added.
+            for seq, fid in (("<Motion>", self._dnd_motion_id),
+                             ("<ButtonRelease-1>", self._dnd_release_id)):
+                try:
+                    self.root.unbind(seq, fid)
+                except tk.TclError:
+                    pass
         if target == "channel" and kind == "instrument":
             self._drop_instrument(tid, payload)
         elif target == "track" and kind == "pattern":

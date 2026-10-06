@@ -59,7 +59,7 @@ class PluginPicker(ttk.Frame):
             cell.grid(row=0, column=col, padx=4, pady=2, sticky="nsew")
             frame.columnconfigure(col, weight=1)
             dot = tk.Canvas(cell, width=14, height=14, bg="#161b22",
-                            highlightthickness=0)
+                            highlightthickness=0, borderwidth=0)
             dot.pack(pady=(2, 4))
             dot.create_oval(1, 1, 13, 13, fill=color, outline="")
             ttk.Label(cell, text=label, font=("", 9)).pack()

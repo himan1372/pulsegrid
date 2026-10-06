@@ -101,7 +101,7 @@ class AutomationEditor(ttk.Frame):
         self._tension_scale = tk.Scale(
             top, from_=0, to=100, orient="horizontal",
             variable=self._tension_var, length=80, showvalue=False,
-            bg="#161b22", highlightthickness=0)
+            bg="#161b22", highlightthickness=0, borderwidth=0)
         self._tension_scale.pack(side="left", padx=2)
         self._tension_label = ttk.Label(top, text="50", width=3,
                                         font=("", 8))
@@ -154,7 +154,7 @@ class AutomationEditor(ttk.Frame):
         self._lfo_speed = tk.Scale(
             lfo, from_=0.125, to=8.0, resolution=0.125, orient="horizontal",
             variable=self._lfo_speed_var, length=70, showvalue=False,
-            bg="#161b22", highlightthickness=0)
+            bg="#161b22", highlightthickness=0, borderwidth=0)
         self._lfo_speed.pack(side="left", padx=2)
         self._lfo_speed_label = ttk.Label(lfo, text="1.00/bt", width=7,
                                           font=("", 8))
@@ -174,7 +174,7 @@ class AutomationEditor(ttk.Frame):
         self._lfo_skew = tk.Scale(
             lfo, from_=-100, to=100, orient="horizontal",
             variable=self._lfo_skew_var, length=60, showvalue=False,
-            bg="#161b22", highlightthickness=0)
+            bg="#161b22", highlightthickness=0, borderwidth=0)
         self._lfo_skew.pack(side="left", padx=2)
         self._lfo_skew.bind("<ButtonRelease-1>",
                             lambda _e: self._on_lfo_release())
@@ -186,7 +186,7 @@ class AutomationEditor(ttk.Frame):
         self._lfo_pw = tk.Scale(
             lfo, from_=1, to=99, orient="horizontal",
             variable=self._lfo_pw_var, length=60, showvalue=False,
-            bg="#161b22", highlightthickness=0)
+            bg="#161b22", highlightthickness=0, borderwidth=0)
         self._lfo_pw.pack(side="left", padx=2)
         self._lfo_pw.bind("<ButtonRelease-1>",
                           lambda _e: self._on_lfo_release())
@@ -196,7 +196,7 @@ class AutomationEditor(ttk.Frame):
         self._lfo_level = tk.Scale(
             lfo, from_=-100, to=100, orient="horizontal",
             variable=self._lfo_level_var, length=60, showvalue=False,
-            bg="#161b22", highlightthickness=0)
+            bg="#161b22", highlightthickness=0, borderwidth=0)
         self._lfo_level.pack(side="left", padx=2)
         self._lfo_level.bind("<ButtonRelease-1>",
                              lambda _e: self._on_lfo_release())
@@ -213,7 +213,7 @@ class AutomationEditor(ttk.Frame):
                 "Add: base + level*wave (bipolar params like pan).\n"
                 "Multiply: base * (1 + level*wave) (unipolar like gain).")
 
-        self._canvas = tk.Canvas(self, bg="#0d1117", highlightthickness=0,
+        self._canvas = tk.Canvas(self, bg="#0d1117", highlightthickness=0, borderwidth=0,
                                  height=230)
         self._canvas.pack(side="top", fill="both", expand=True,
                           padx=8, pady=(2, 8))
