@@ -1,0 +1,21 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "pulsegrid"
+version = "0.41.0"
+description = "Pulsegrid — an original desktop music production app (Python UI + Rust audio engine)"
+requires-python = ">=3.10"
+
+[project.scripts]
+pulsegrid = "daw.__main__:main"
+
+[tool.maturin]
+bindings = "pyo3"
+manifest-path = "engine/Cargo.toml"
+module-name = "daw._daw_engine_rs"
+python-source = "python"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

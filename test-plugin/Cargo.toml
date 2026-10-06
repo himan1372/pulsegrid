@@ -1,0 +1,16 @@
+[package]
+name = "pulsegrid-test-gain"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal CLAP test plugin (stereo gain) used by Pulsegrid's plugin-hosting tests. Not shipped."
+
+[lib]
+crate-type = ["cdylib"]
+name = "pulsegrid_test_gain"
+
+[dependencies]
+clack-plugin = "0.2"
+clack-extensions = { version = "0.2", features = ["audio-ports", "params", "gui", "latency", "state", "state-context", "clack-plugin"] }
+clack-common = "0.2"
+clap-sys = "0.5"
+x11rb = { version = "0.13", features = ["allow-unsafe-code"] }

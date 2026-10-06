@@ -1,0 +1,81 @@
+# Build standalone Pulsegrid executables with PyInstaller.
+#
+# Runs on every push to master and on demand (Actions tab -> "Run workflow").
+# Produces one single-file executable per OS, uploaded as workflow artifacts:
+#   - pulsegrid-windows/pulsegrid.exe  (Windows 10/11, 64-bit)
+#   - pulsegrid-linux/pulsegrid        (Ubuntu 22.04+, 64-bit)
+#
+# Download: repo -> Actions -> pick a run -> Artifacts.
+
+name: Build executables
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            exe: pulsegrid.exe
+            artifact: pulsegrid-windows
+          - os: ubuntu-22.04
+            exe: pulsegrid
+            artifact: pulsegrid-linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux audio deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q libasound2-dev
+
+      - name: Build engine + bundle executable
+        shell: bash
+        run: |
+          python -m venv .venv
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            PY=.venv/Scripts/python
+          else
+            PY=.venv/bin/python
+          fi
+          $PY -m pip install --upgrade pip
+          $PY -m pip install maturin pyinstaller
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            .venv/Scripts/maturin develop --release
+          else
+            .venv/bin/maturin develop --release
+          fi
+          printf 'from daw.__main__ import main\n\nif __name__ == "__main__":\n    raise SystemExit(main())\n' > "$RUNNER_TEMP/entry.py"
+          $PY -m PyInstaller --noconfirm --onefile --windowed \
+            --name pulsegrid \
+            --paths python \
+            --distpath dist \
+            "$RUNNER_TEMP/entry.py"
+
+      - name: Smoke-test the executable
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ./dist/pulsegrid.exe --smoke
+          else
+            sudo apt-get install -y -q xvfb
+            xvfb-run -a ./dist/pulsegrid --smoke
+          fi
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.exe }}
