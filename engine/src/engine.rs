@@ -1309,6 +1309,11 @@ fn make_fx(raw: &RawFx) -> Result<FxParams, String> {
             params: raw.plugin_params.clone(),
             state: raw.plugin_state.clone(),
         }),
+        "vst3" => Ok(FxParams::Vst3Plugin {
+            plugin_id: raw.plugin_id.clone(),
+            path: raw.plugin_path.clone(),
+            params: raw.plugin_params.clone(),
+        }),
         other => Err(format!("unknown effect '{}'", other)),
     }
 }

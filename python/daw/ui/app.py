@@ -153,6 +153,7 @@ class PulsegridApp:
         self._roll_visible = True
         self._playlist_visible = True
         self._clap_scan_cache = None  # lazy list of scanned CLAP plugins
+        self._vst3_scan_cache = None  # lazy list of scanned VST3 plugins
 
         try:
             self.engine = EngineBridge()
@@ -2320,22 +2321,59 @@ class PulsegridApp:
         register_plugin(plugin_id, name, params)
         return params
 
+    def _scan_vst3_plugins(self) -> list:
+        if self._vst3_scan_cache is None:
+            try:
+                self._vst3_scan_cache = self.engine.scan_vst3_plugins()
+            except EngineError as e:
+                show_error(self.root, "VST3 scan failed", str(e))
+                self._vst3_scan_cache = []
+        return self._vst3_scan_cache
+
+    def ensure_vst3_registered(self, plugin_id: str,
+                               plugin_path: str) -> list:
+        """Register a VST3 plugin's params; returns the param list."""
+        try:
+            params = self.engine.vst3_plugin_params(plugin_path)
+        except EngineError as e:
+            raise EngineError(
+                f"cannot read parameters of '{plugin_id}': {e}") from e
+        name = plugin_id
+        for p in self._scan_vst3_plugins():
+            if p["plugin_id"] == plugin_id:
+                name = p["name"]
+                break
+        register_plugin(plugin_id, name, params)
+        return params
+
     def on_mixer_add_plugin(self, track_id: str) -> None:
-        plugins = self._scan_clap_plugins()
+        # Combine CLAP and VST3 plugins; the dicts carry "format".
+        plugins = self._scan_clap_plugins() + self._scan_vst3_plugins()
 
         def picked(plugin: dict) -> None:
             # Validate before touching the project: a broken plugin
             # fails here, loudly, instead of silently in the graph.
+            is_vst3 = plugin.get("format") == "vst3"
             try:
-                self.engine.check_clap_plugin(plugin["path"], plugin["id"])
-                params = self.ensure_plugin_registered(plugin["id"],
-                                                       plugin["path"])
+                if is_vst3:
+                    self.engine.check_vst3_plugin(plugin["path"])
+                    params = self.ensure_vst3_registered(
+                        plugin["plugin_id"], plugin["path"])
+                else:
+                    self.engine.check_clap_plugin(plugin["path"], plugin["id"])
+                    params = self.ensure_plugin_registered(plugin["id"],
+                                                           plugin["path"])
             except (EngineError, ProjectError) as e:
                 show_error(self.root, "Cannot add plugin", str(e))
                 return
-            fx = Effect.plugin(
-                plugin["id"], plugin["path"],
-                {int(p["id"]): float(p["default"]) for p in params})
+            if is_vst3:
+                fx = Effect.vst3(
+                    plugin["plugin_id"], plugin["path"],
+                    {int(p["id"]): float(p["default"]) for p in params})
+            else:
+                fx = Effect.plugin(
+                    plugin["id"], plugin["path"],
+                    {int(p["id"]): float(p["default"]) for p in params})
 
             def mutate(project, tid=track_id, f=fx):
                 self._mixer_track(project, tid).effects.append(f)
@@ -2343,7 +2381,9 @@ class PulsegridApp:
             self._structural_edit(f"add plugin {plugin['name']}", mutate)
             self._status(f"Added {plugin['name']} to track.")
 
-        ClapPickerDialog(self.root, plugins, picked)
+        ClapPickerDialog(self.root, plugins, picked,
+                         title="Add plugin",
+                         heading="Audio effects (CLAP + VST3)")
 
     def on_mixer_edit_plugin(self, track_id: str, index: int) -> None:
         track = self._mixer_track(self.project, track_id)
@@ -2351,17 +2391,21 @@ class PulsegridApp:
             fx = track.effects[index]
         except IndexError:
             return
-        if fx.kind != "plugin":
+        if fx.kind not in ("plugin", "vst3"):
             return
         try:
-            params = self.ensure_plugin_registered(fx.plugin_id,
-                                                   fx.plugin_path)
+            if fx.kind == "vst3":
+                params = self.ensure_vst3_registered(fx.plugin_id,
+                                                     fx.plugin_path)
+            else:
+                params = self.ensure_plugin_registered(fx.plugin_id,
+                                                       fx.plugin_path)
         except (EngineError, ProjectError) as e:
             show_error(self.root, "Cannot open plugin", str(e))
             return
 
-        def on_change(clap_id: int, value: float) -> None:
-            self.on_mixer_effect_param(track_id, index, str(clap_id), value)
+        def on_change(param_id: int, value: float) -> None:
+            self.on_mixer_effect_param(track_id, index, str(param_id), value)
 
         try:
             track_idx = next(i for i, t in enumerate(self.project.tracks)
@@ -2501,10 +2545,12 @@ class PulsegridApp:
             track = project.tracks[track_idx]
             if fx_index is not None:
                 fx = track.effects[fx_index]
-                if fx.kind != "plugin":
+                if fx.kind not in ("plugin", "vst3"):
                     raise ProjectError("effect slot is not a plugin")
                 fx.params = {str(k): float(v) for k, v in params.items()}
-                fx.state_base64 = blob
+                # VST3 has no opaque state blob in v1; params only.
+                if fx.kind == "plugin":
+                    fx.state_base64 = blob
             else:
                 layer = track.generator_layers[layer_index]
                 layer.generator.params = {

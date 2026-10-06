@@ -14,6 +14,7 @@
 use std::f32::consts::PI;
 
 use crate::plugins::HostedClapPlugin;
+use crate::vst3::HostedVst3Plugin;
 
 /// Validated effect parameters (control-thread data).
 #[derive(Clone, Debug, PartialEq)]
@@ -53,6 +54,15 @@ pub enum FxParams {
         /// bridge). When the plugin accepts it, it is authoritative and
         /// `params` are skipped. `None` = params only.
         state: Option<Vec<u8>>,
+    },
+    /// A hosted VST3 audio-effect plugin. `params` are (VST3 param id,
+    /// normalized value) pairs; the plugin library is resolved from
+    /// `plugin_id` (falling back to `path`) when the effect is built.
+    /// VST3 state blobs are not yet persisted (params only in v1).
+    Vst3Plugin {
+        plugin_id: String,
+        path: String,
+        params: Vec<(u32, f64)>,
     },
 }
 
@@ -148,6 +158,9 @@ impl FxParams {
             }
             (FxParams::PitchShift { mix, .. }, FxParamId::PitchMix) => Some(*mix),
             (FxParams::Plugin { params, .. }, FxParamId::PluginParam(id)) => {
+                params.iter().find(|(pid, _)| *pid == id).map(|(_, v)| *v as f32)
+            }
+            (FxParams::Vst3Plugin { params, .. }, FxParamId::PluginParam(id)) => {
                 params.iter().find(|(pid, _)| *pid == id).map(|(_, v)| *v as f32)
             }
             _ => None,
@@ -250,6 +263,32 @@ impl FxParams {
                 for (id, value) in params {
                     if !value.is_finite() {
                         return Err(format!("plugin param {} has non-finite value", id));
+                    }
+                }
+            }
+            FxParams::Vst3Plugin {
+                plugin_id,
+                path,
+                params,
+            } => {
+                if plugin_id.is_empty() {
+                    return Err("VST3 effect has no plugin id".to_string());
+                }
+                if path.is_empty() {
+                    return Err("VST3 effect has no library path".to_string());
+                }
+                if params.len() > 1024 {
+                    return Err("VST3 effect has too many parameters".to_string());
+                }
+                for (id, value) in params {
+                    if !value.is_finite() {
+                        return Err(format!("VST3 param {} has non-finite value", id));
+                    }
+                    if !(0.0..=1.0).contains(value) {
+                        return Err(format!(
+                            "VST3 param {} out of normalized range 0.0-1.0",
+                            id
+                        ));
                     }
                 }
             }
@@ -730,6 +769,7 @@ pub(crate) enum Effect {
     Ducker(Ducker),
     PitchShift(PitchShift),
     Plugin(HostedClapPlugin),
+    Vst3Plugin(HostedVst3Plugin),
 }
 
 impl Effect {
@@ -795,6 +835,25 @@ impl Effect {
                 }
                 Ok(Effect::Plugin(hosted))
             }
+            FxParams::Vst3Plugin {
+                plugin_id,
+                path,
+                params,
+            } => {
+                let lib = if std::path::Path::new(path).is_file() {
+                    std::path::PathBuf::from(path)
+                } else {
+                    crate::vst3::find_vst3_path(plugin_id).ok_or_else(|| {
+                        format!(
+                            "VST3 plugin '{}' not found (looked in {} and the VST3 search paths)",
+                            plugin_id, path
+                        )
+                    })?
+                };
+                let hosted =
+                    HostedVst3Plugin::load(&lib, sample_rate, params)?;
+                Ok(Effect::Vst3Plugin(hosted))
+            }
         }
     }
 
@@ -806,6 +865,7 @@ impl Effect {
             Effect::Ducker(d) => d.process(buf, sidechain),
             Effect::PitchShift(p) => p.process(buf),
             Effect::Plugin(p) => p.process_block(buf),
+            Effect::Vst3Plugin(p) => p.process_block(buf),
         }
     }
 
@@ -819,6 +879,7 @@ impl Effect {
             Effect::Delay(_) | Effect::Drive(_) | Effect::Filter(_) | Effect::Ducker(_) => 0,
             Effect::PitchShift(_) => PitchShift::LAT_NOMINAL as u32,
             Effect::Plugin(p) => p.latency_samples(),
+            Effect::Vst3Plugin(p) => p.latency_samples(),
         }
     }
 

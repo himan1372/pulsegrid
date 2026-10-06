@@ -14,6 +14,7 @@ mod plugins;
 mod sample;
 mod synth;
 mod timeline;
+mod vst3;
 mod wav;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -376,10 +377,10 @@ fn parse_arrangement(
         let mut effects = Vec::with_capacity(fx_any.len());
         for f in fx_any.iter() {
             let kind: String = get_required(f, "type")?;
-            let (plugin_id, plugin_path, plugin_params) = if kind == "plugin" {
+            let (plugin_id, plugin_path, plugin_params) = if kind == "plugin" || kind == "vst3" {
                 let plugin_id: String = get_required(f, "plugin_id")?;
                 let plugin_path: String = get_required(f, "plugin_path")?;
-                // "params" is {clap_id: value}; keys arrive as strings.
+                // "params" is {param_id: value}; keys arrive as strings.
                 let mut params = Vec::new();
                 if let Ok(Some(d)) = f.get_item("params") {
                     if let Ok(dict) = d.downcast::<PyDict>() {
@@ -1079,6 +1080,50 @@ impl PyEngine {
                 m
             })
             .collect()
+    }
+
+    /// Scan the standard VST3 locations. Returns [{name, path, plugin_id,
+    /// format}] dicts. Runs on the calling thread; never touches audio.
+    fn scan_vst3_plugins(&self) -> Vec<HashMap<String, String>> {
+        crate::vst3::scan_vst3_plugins()
+    }
+
+    /// Get the parameter list for a VST3 plugin: [{id, name, default}].
+    /// Loads the plugin briefly on the calling thread.
+    fn vst3_plugin_params(
+        &self,
+        path: &str,
+    ) -> PyResult<Vec<HashMap<String, PyObject>>> {
+        let params = crate::vst3::vst3_plugin_params(std::path::Path::new(path))
+            .map_err(err_to_py)?;
+        Python::with_gil(|py| {
+            params
+                .into_iter()
+                .map(|(id, name, default)| {
+                    let mut m = HashMap::new();
+                    m.insert("id".to_string(), id.into_py(py));
+                    m.insert("name".to_string(), name.into_py(py));
+                    // VST3 params are normalized 0.0-1.0.
+                    m.insert("min".to_string(), 0.0f64.into_py(py));
+                    m.insert("max".to_string(), 1.0f64.into_py(py));
+                    m.insert("default".to_string(), default.into_py(py));
+                    Ok(m)
+                })
+                .collect()
+        })
+    }
+
+    /// Fully load and start a VST3 plugin, then drop it. Used by the UI
+    /// to validate a plugin *before* adding it to a track.
+    fn check_vst3_plugin(&self, path: &str) -> PyResult<()> {
+        let sample_rate = self.inner.lock().map(|e| e.sample_rate()).unwrap_or(44100);
+        crate::vst3::HostedVst3Plugin::load(
+            std::path::Path::new(path),
+            sample_rate,
+            &[],
+        )
+        .map(|_| ())
+        .map_err(err_to_py)
     }
 
     /// Save every live plugin's opaque CLAP state blob. Returns a list of

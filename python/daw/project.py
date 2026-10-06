@@ -540,6 +540,18 @@ class Effect:
                    params={str(k): float(v) for k, v in params.items()},
                    plugin_id=plugin_id, plugin_path=plugin_path)
 
+    @classmethod
+    def vst3(cls, plugin_id: str, plugin_path: str,
+             params: dict) -> "Effect":
+        """Create a VST3 plugin effect.
+
+        `params` maps VST3 param id (int) -> normalized value 0.0-1.0;
+        missing params fall back to the plugin defaults at load time.
+        """
+        return cls(kind="vst3",
+                   params={str(k): float(v) for k, v in params.items()},
+                   plugin_id=plugin_id, plugin_path=plugin_path)
+
     def validate(self) -> None:
         if self.kind == "plugin":
             if not self.plugin_id:
@@ -558,6 +570,26 @@ class Effect:
                     raise ProjectError(
                         f"plugin effect: param '{k}' is not a number")
             _validate_state_base64(self.state_base64, "plugin effect")
+            return
+        if self.kind == "vst3":
+            if not self.plugin_id:
+                raise ProjectError("VST3 effect has no plugin id")
+            if not self.plugin_path:
+                raise ProjectError("VST3 effect has no library path")
+            for k, v in self.params.items():
+                try:
+                    int(k)
+                    fv = float(v)
+                except (TypeError, ValueError):
+                    raise ProjectError(
+                        f"VST3 effect: param '{k}' has invalid id/value"
+                    ) from None
+                if fv != fv:  # NaN
+                    raise ProjectError(
+                        f"VST3 effect: param '{k}' is not a number")
+                if not (0.0 <= fv <= 1.0):
+                    raise ProjectError(
+                        f"VST3 effect: param '{k}' out of normalized range 0.0-1.0")
             return
         spec = FX_DEFS.get(self.kind)
         if spec is None:
@@ -581,6 +613,12 @@ class Effect:
                     "params": {k: float(v)
                                for k, v in self.params.items()},
                     "state_base64": self.state_base64}
+        if self.kind == "vst3":
+            return {"type": "vst3",
+                    "plugin_id": self.plugin_id,
+                    "plugin_path": self.plugin_path,
+                    "params": {k: float(v)
+                               for k, v in self.params.items()}}
         out = {"type": self.kind}
         for param, _label, _lo, _hi, unit, _default in FX_DEFS[self.kind]:
             v = float(self.params[param])
@@ -590,7 +628,7 @@ class Effect:
     def to_dict(self) -> dict:
         d = {"type": self.kind,
              "params": {k: float(v) for k, v in self.params.items()}}
-        if self.kind == "plugin":
+        if self.kind in ("plugin", "vst3"):
             d["plugin_id"] = self.plugin_id
             d["plugin_path"] = self.plugin_path
             if self.state_base64:
@@ -615,7 +653,7 @@ class Effect:
 
     def display_name(self) -> str:
         """Short name for mixer lists: 'Delay', or the plugin name."""
-        if self.kind == "plugin":
+        if self.kind in ("plugin", "vst3"):
             return _plugin_display_names.get(self.plugin_id,
                                              f"Plugin ({self.plugin_id})")
         return FX_NAMES.get(self.kind, self.kind)

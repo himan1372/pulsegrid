@@ -83,7 +83,7 @@ class EngineBridge:
                 conv = 1.0
             elif kind == "fx":
                 fx_kind = project.track_by_id(lane.track_id).effects[idx].kind
-                if fx_kind == "plugin":
+                if fx_kind in ("plugin", "vst3"):
                     # Plugin params are already in real units.
                     conv = 1.0
                 else:
@@ -444,6 +444,27 @@ class EngineBridge:
     def scan_clap_plugins(self) -> list:
         """Scan for CLAP audio-effect plugins (control thread)."""
         return self._eng.scan_clap_plugins()
+
+    def scan_vst3_plugins(self) -> list:
+        """Scan standard locations for VST3 plugins (control thread).
+
+        Returns [{name, path, plugin_id, format}] dicts.
+        """
+        return self._eng.scan_vst3_plugins()
+
+    def vst3_plugin_params(self, path: str) -> list:
+        """List a VST3 plugin's parameters (control thread).
+
+        Returns [{id, name, min, max, default}] with normalized 0.0-1.0.
+        """
+        return self._eng.vst3_plugin_params(path)
+
+    def check_vst3_plugin(self, path: str) -> None:
+        """Fully load-test a VST3 plugin; raises EngineError on failure."""
+        try:
+            self._eng.check_vst3_plugin(path)
+        except Exception as e:
+            raise EngineError(str(e)) from e
 
     def clap_plugin_params(self, path: str, plugin_id: str) -> list:
         """List a plugin's parameters (control thread)."""

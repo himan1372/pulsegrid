@@ -15,6 +15,7 @@ clack-host = "0.2"
 clack-extensions = { version = "0.2", features = ["audio-ports", "params", "gui", "latency", "state", "state-context", "clack-host"] }
 clack-common = "0.2"
 clap-sys = "0.5"
+vst3-host = { version = "0.9", default-features = false }
 rayon = "1.8"
 symphonia = { version = "0.6", features = ["mp3"] }
 
