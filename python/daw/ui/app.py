@@ -338,6 +338,11 @@ class PulsegridApp:
             on_set_layer_pitch=self.on_mixer_set_layer_pitch,
             on_set_output=self.on_mixer_set_output,
             on_route_only=self.on_mixer_route_only,
+            on_add_modulator=self.on_mixer_add_modulator,
+            on_edit_modulator=self.on_mixer_edit_modulator,
+            on_remove_modulator=self.on_mixer_remove_modulator,
+            on_add_assignment=self.on_mixer_add_assignment,
+            on_remove_assignment=self.on_mixer_remove_assignment,
         )
         self.workspace_paned.add(self.mixer, weight=0)
         self.mixer.set_project(self.project)
@@ -2732,6 +2737,127 @@ class PulsegridApp:
 
         self._structural_edit("remove layer", mutate)
         self._status("Layer removed.")
+
+    # -- Modulators --------------------------------------------------------
+
+    def on_mixer_add_modulator(self, track_id: str) -> None:
+        """Add a new MSEG modulator to the track."""
+        from daw.project import Modulator
+        import uuid
+        mod = Modulator(
+            id=f"mod-{uuid.uuid4().hex[:8]}",
+            name=f"Modulator {len(self._mixer_track(self.project, track_id).modulators) + 1}",
+            nodes=[[0.0, 0.0], [2.0, 1.0], [4.0, 0.0]],
+            loop_enabled=True,
+            length_bars=1.0,
+            rate_mult=1.0,
+            assignments=[],
+        )
+
+        def mutate(project, tid=track_id, m=mod):
+            self._mixer_track(project, tid).modulators.append(m)
+
+        self._structural_edit(f"add modulator {mod.name}", mutate)
+        self._status(f"Modulator added: {mod.name}.")
+
+    def on_mixer_edit_modulator(self, track_id: str, mod_idx: int) -> None:
+        """Open the MSEG curve editor for a modulator."""
+        from daw.ui.modulators import MSEGCurveEditor
+        track = self._mixer_track(self.project, track_id)
+        if not (0 <= mod_idx < len(track.modulators)):
+            return
+        mod = track.modulators[mod_idx]
+
+        def on_change(nodes):
+            def mutate(project, tid=track_id, idx=mod_idx, ns=nodes):
+                mods = self._mixer_track(project, tid).modulators
+                if 0 <= idx < len(mods):
+                    mods[idx].nodes = ns
+            self._structural_edit(f"edit {mod.name} curve", mutate)
+
+        MSEGCurveEditor(self.root, f"MSEG: {mod.name}",
+                        mod.nodes, mod.length_bars, on_change)
+
+    def on_mixer_remove_modulator(self, track_id: str, mod_idx: int) -> None:
+        """Remove a modulator."""
+        def mutate(project, tid=track_id, idx=mod_idx):
+            track = self._mixer_track(project, tid)
+            if 0 <= idx < len(track.modulators):
+                del track.modulators[idx]
+
+        self._structural_edit("remove modulator", mutate)
+        self._status("Modulator removed.")
+
+    def on_mixer_add_assignment(self, track_id: str, mod_idx: int) -> None:
+        """Open the assignment dialog to route a modulator to a param."""
+        from daw.ui.modulators import ModAssignmentDialog
+        from daw.project import ModAssignment
+        track = self._mixer_track(self.project, track_id)
+        if not (0 <= mod_idx < len(track.modulators)):
+            return
+
+        # Build target list: FX plugin slots and generator layers.
+        targets = []
+        for i, fx in enumerate(track.effects):
+            if fx.kind in ("plugin", "vst3"):
+                try:
+                    if fx.kind == "vst3":
+                        params = self.engine.vst3_plugin_params(fx.plugin_path)
+                    else:
+                        params = self.ensure_plugin_registered(
+                            fx.plugin_id, fx.plugin_path)
+                    targets.append({
+                        "kind": "fx", "index": i,
+                        "label": f"FX {i}: {fx.display_name()}",
+                        "params": params,
+                    })
+                except (EngineError, ProjectError):
+                    continue
+        for i, layer in enumerate(track.generator_layers):
+            gen = layer.generator
+            try:
+                if gen.format == "vst3":
+                    params = self.engine.vst3_plugin_params(gen.plugin_path)
+                else:
+                    params = self.ensure_plugin_registered(
+                        gen.plugin_id, gen.plugin_path)
+                targets.append({
+                    "kind": "gen", "index": i,
+                    "label": f"Layer {i}: {gen.display_name()}",
+                    "params": params,
+                })
+            except (EngineError, ProjectError):
+                continue
+
+        if not targets:
+            show_error(self.root, "No targets",
+                       "No plugin parameters available.\n"
+                       "Add a plugin effect or generator layer first.")
+            return
+
+        def on_add(a_dict):
+            a = ModAssignment(**a_dict)
+            def mutate(project, tid=track_id, idx=mod_idx, assgn=a):
+                mods = self._mixer_track(project, tid).modulators
+                if 0 <= idx < len(mods):
+                    mods[idx].assignments.append(assgn)
+            self._structural_edit("add modulation assignment", mutate)
+            self._status("Assignment added.")
+
+        ModAssignmentDialog(self.root, targets, on_add)
+
+    def on_mixer_remove_assignment(self, track_id: str, mod_idx: int,
+                                   assign_idx: int) -> None:
+        """Remove a modulation assignment."""
+        def mutate(project, tid=track_id, mi=mod_idx, ai=assign_idx):
+            track = self._mixer_track(project, tid)
+            if 0 <= mi < len(track.modulators):
+                mods = track.modulators[mi].assignments
+                if 0 <= ai < len(mods):
+                    del mods[ai]
+
+        self._structural_edit("remove assignment", mutate)
+        self._status("Assignment removed.")
 
     def on_mixer_set_layer_mode(self, track_id: str, mode: str) -> None:
         """Set the layer fan-out mode (all/random/sequential)."""

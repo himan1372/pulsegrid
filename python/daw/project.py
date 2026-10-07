@@ -47,6 +47,11 @@ Format versions:
   project-level `identity_groups` (linked tracks share name/color/icon;
   edits ripple). Additive; older files migrate automatically (tracks
   get positional default colors, no icon, no links).
+* v16 -- track modulators (MSEG): per-track tempo-synced multi-segment
+  envelope modulators with one-to-many assignments to plugin parameters
+  (amount + polarity per assignment). Inspired by studying MegaMorph's
+  documented modulation architecture; implemented originally for
+  Pulsegrid. Additive; older files migrate automatically (no modulators).
 """
 
 from __future__ import annotations
@@ -63,7 +68,7 @@ from .track_identity import (TRACK_COLORS, TRACK_ICONS, TrackIdentity,
                              normalize_link_groups)
 
 FORMAT_ID = "pulsegrid-project"
-FORMAT_VERSION = 15
+FORMAT_VERSION = 16
 
 INSTRUMENTS = ("kick", "snare", "hat", "bass", "lead")
 
@@ -784,6 +789,7 @@ class GeneratorLayer:
                   "enabled": bool(self.enabled)})
         return d
 
+
     def to_dict(self) -> dict:
         d = self.generator.to_dict()
         d.update({"gain": float(self.gain),
@@ -805,6 +811,133 @@ class GeneratorLayer:
             raise ProjectError(f"layer has invalid field: {e}") from e
         layer.validate()
         return layer
+
+
+@dataclass
+class ModAssignment:
+    """One modulator -> plugin parameter routing.
+
+    target_kind: "fx" (track effect slot) or "gen" (generator layer).
+    target_index: slot/layer index.
+    param_id: plugin parameter id.
+    amount: 0..1 depth.
+    polarity: "positive", "negative", or "bipolar".
+    param_min/param_max: parameter range for clamping.
+    """
+    target_kind: str = "fx"
+    target_index: int = 0
+    param_id: int = 0
+    amount: float = 0.5
+    polarity: str = "positive"
+    param_min: float = 0.0
+    param_max: float = 1.0
+
+    def validate(self) -> None:
+        if self.target_kind not in ("fx", "gen"):
+            raise ProjectError(
+                f"mod assignment: bad target_kind '{self.target_kind}'")
+        if self.target_index < 0:
+            raise ProjectError("mod assignment: target_index < 0")
+        if not (0.0 <= self.amount <= 1.0):
+            raise ProjectError(
+                f"mod assignment: amount {self.amount} out of range 0-1")
+        if self.polarity not in ("positive", "negative", "bipolar"):
+            raise ProjectError(
+                f"mod assignment: bad polarity '{self.polarity}'")
+
+    def to_dict(self) -> dict:
+        return {"target_kind": self.target_kind,
+                "target_index": int(self.target_index),
+                "param_id": int(self.param_id),
+                "amount": float(self.amount),
+                "polarity": self.polarity,
+                "param_min": float(self.param_min),
+                "param_max": float(self.param_max)}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ModAssignment":
+        if not isinstance(data, dict):
+            raise ProjectError("mod assignment must be an object")
+        a = cls(target_kind=str(data.get("target_kind", "fx")),
+                target_index=int(data.get("target_index", 0)),
+                param_id=int(data.get("param_id", 0)),
+                amount=float(data.get("amount", 0.5)),
+                polarity=str(data.get("polarity", "positive")),
+                param_min=float(data.get("param_min", 0.0)),
+                param_max=float(data.get("param_max", 1.0)))
+        a.validate()
+        return a
+
+
+@dataclass
+class Modulator:
+    """A track MSEG modulator.
+
+    nodes: [[time_beats, value 0..1], ...] sorted by time.
+    loop_enabled: wrap at length_bars.
+    length_bars: loop length in bars (tempo-synced).
+    rate_mult: per-modulator rate multiplier.
+    assignments: list of ModAssignment (one-to-many routing).
+    """
+    id: str = ""
+    name: str = "Modulator"
+    nodes: list = field(default_factory=list)
+    loop_enabled: bool = True
+    length_bars: float = 1.0
+    rate_mult: float = 1.0
+    assignments: list = field(default_factory=list)
+
+    def validate(self) -> None:
+        if not self.id:
+            raise ProjectError("modulator: missing id")
+        for n in self.nodes:
+            if not (isinstance(n, (list, tuple)) and len(n) == 2):
+                raise ProjectError("modulator: nodes must be [time, value] pairs")
+            t, v = float(n[0]), float(n[1])
+            if t < 0:
+                raise ProjectError("modulator: node time < 0")
+            if not (0.0 <= v <= 1.0):
+                raise ProjectError(
+                    f"modulator: node value {v} out of range 0-1")
+        if self.length_bars <= 0:
+            raise ProjectError("modulator: length_bars must be > 0")
+        if self.rate_mult <= 0:
+            raise ProjectError("modulator: rate_mult must be > 0")
+        for a in self.assignments:
+            if isinstance(a, dict):
+                a = ModAssignment.from_dict(a)
+            a.validate()
+
+    def to_dict(self) -> dict:
+        return {"id": self.id,
+                "name": self.name,
+                "nodes": [[float(t), float(v)] for t, v in self.nodes],
+                "loop_enabled": bool(self.loop_enabled),
+                "length_bars": float(self.length_bars),
+                "rate_mult": float(self.rate_mult),
+                "assignments": [a.to_dict() if hasattr(a, 'to_dict') else a
+                                for a in self.assignments]}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Modulator":
+        if not isinstance(data, dict):
+            raise ProjectError("modulator must be an object")
+        m = cls(id=str(data.get("id", "")),
+                name=str(data.get("name", "Modulator")),
+                nodes=[[float(t), float(v)]
+                       for t, v in data.get("nodes", [])],
+                loop_enabled=bool(data.get("loop_enabled", True)),
+                length_bars=float(data.get("length_bars", 1.0)),
+                rate_mult=float(data.get("rate_mult", 1.0)),
+                assignments=[ModAssignment.from_dict(a)
+                             for a in data.get("assignments", [])])
+        m.validate()
+        return m
+
+    def engine_params(self) -> dict:
+        """Convert to the engine's modulator dict."""
+        return self.to_dict()
+
 
 
 # Registry of known plugin parameters, populated by the UI from the
@@ -1277,6 +1410,7 @@ class PlaylistTrack:
     layer_mode: str = "all"  # "all" | "random" | "sequential"
     sends: list[Send] = field(default_factory=list)
     output: str = "master"  # track id or "master"
+    modulators: list[Modulator] = field(default_factory=list)
 
     @property
     def identity(self) -> TrackIdentity:
@@ -1345,6 +1479,7 @@ class PlaylistTrack:
             "audio_clips": [c.to_dict() for c in self.audio_clips],
             "sends": [s.to_dict() for s in self.sends],
             "output": self.output,
+            "modulators": [m.to_dict() for m in self.modulators],
         }
 
     @classmethod
@@ -1379,6 +1514,8 @@ class PlaylistTrack:
                 layer_mode=str(data.get("layer_mode", "all")),
                 sends=[Send.from_dict(s) for s in data.get("sends", [])],
                 output=str(data.get("output", "master")),
+                modulators=[Modulator.from_dict(m)
+                            for m in data.get("modulators", [])],
             )
         except KeyError as e:
             raise ProjectError(f"playlist track missing field {e}") from e

@@ -929,7 +929,7 @@ def test_v15_sample_and_clip_round_trip():
         pitch_semitones=-12.0, fine_cents=50.0, reverse=True, muted=True))
     p.validate()
     d = p.to_dict()
-    assert d["version"] == 15
+    assert d["version"] == 16
     assert d["samples"] == [{"id": "s1", "path": "drums/kick.wav",
                              "name": "kick.wav"}]
     p2 = Project.from_dict(d)
@@ -986,3 +986,56 @@ def test_arrangement_bars_includes_audio_clips():
         id="c1", asset_id="s1", start_beat=20.0, length_beats=8.0))
     # 28 beats -> 7 bars.
     assert p.arrangement_bars() == 7
+
+
+def test_v16_modulator_round_trip():
+    """v16: modulators serialize with assignments and survive round-trip."""
+    from daw.project import ModAssignment, Modulator, empty_project
+    p = empty_project()
+    mod = Modulator(
+        id="mod1", name="Filter Sweep",
+        nodes=[[0.0, 0.0], [2.0, 1.0], [4.0, 0.0]],
+        loop_enabled=True, length_bars=1.0, rate_mult=1.0,
+        assignments=[ModAssignment(
+            target_kind="fx", target_index=0, param_id=5,
+            amount=0.8, polarity="bipolar",
+            param_min=0.0, param_max=1.0)])
+    p.tracks[0].modulators.append(mod)
+    p.validate()
+    d = p.to_dict()
+    assert d["version"] == 16
+    assert len(d["playlist"]["tracks"][0]["modulators"]) == 1
+    md = d["playlist"]["tracks"][0]["modulators"][0]
+    assert md["id"] == "mod1"
+    assert md["nodes"] == [[0.0, 0.0], [2.0, 1.0], [4.0, 0.0]]
+    assert md["assignments"][0]["polarity"] == "bipolar"
+    # Round-trip
+    from daw.project import Project
+    p2 = Project.from_dict(d)
+    p2.validate()
+    m2 = p2.tracks[0].modulators[0]
+    assert m2.name == "Filter Sweep"
+    assert len(m2.assignments) == 1
+    assert m2.assignments[0].amount == 0.8
+    # Engine params
+    ep = m2.engine_params()
+    assert ep["length_bars"] == 1.0
+    assert ep["assignments"][0]["target_kind"] == "fx"
+
+
+def test_modulator_validation():
+    """Modulator validation rejects bad data."""
+    from daw.project import ModAssignment, Modulator, ProjectError
+    import pytest
+    # Bad polarity
+    with pytest.raises(ProjectError):
+        ModAssignment(polarity="sideways").validate()
+    # Bad amount
+    with pytest.raises(ProjectError):
+        ModAssignment(amount=1.5).validate()
+    # Bad node value
+    with pytest.raises(ProjectError):
+        Modulator(id="m", nodes=[[0.0, 1.5]]).validate()
+    # Missing id
+    with pytest.raises(ProjectError):
+        Modulator(id="").validate()

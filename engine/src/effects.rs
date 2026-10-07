@@ -896,6 +896,16 @@ impl Effect {
     /// param to the wrong effect kind is an error. Never reallocates.
     /// Plugin parameter changes are queued as CLAP events for the next
     /// audio block.
+    /// Queue a raw plugin parameter change (for modulators). Works for
+    /// both CLAP and VST3 plugin effects. No-op for native effects.
+    pub fn queue_plugin_param(&mut self, id: u32, value: f64) {
+        match self {
+            Effect::Plugin(p) => p.queue_param(id, value),
+            Effect::Vst3Plugin(p) => p.queue_param(id, value),
+            _ => {}
+        }
+    }
+
     pub fn set_param(
         &mut self,
         param: FxParamId,

@@ -156,7 +156,7 @@ def test_plugin_automation_renders(engine, plugin_path, plugin_params):
 
 
 def test_format_version_bumped():
-    assert FORMAT_VERSION == 15
+    assert FORMAT_VERSION == 16
 
 
 def test_v6_project_migrates_cleanly():

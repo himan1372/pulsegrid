@@ -46,7 +46,10 @@ class Mixer(ttk.Frame):
                  on_add_layer=None, on_remove_layer=None,
                  on_set_layer_mode=None, on_toggle_layer=None,
                  on_set_layer_gain=None, on_set_layer_pitch=None,
-                 on_set_output=None, on_route_only=None):
+                 on_set_output=None, on_route_only=None,
+                 on_add_modulator=None, on_edit_modulator=None,
+                 on_remove_modulator=None, on_add_assignment=None,
+                 on_remove_assignment=None):
         super().__init__(master)
         self._on_volume = on_volume
         self._on_pan = on_pan
@@ -79,6 +82,11 @@ class Mixer(ttk.Frame):
         self._on_load_chain_preset = on_load_chain_preset
         self._on_save_track_preset = on_save_track_preset
         self._on_load_track_preset = on_load_track_preset
+        self._on_add_modulator = on_add_modulator
+        self._on_edit_modulator = on_edit_modulator
+        self._on_remove_modulator = on_remove_modulator
+        self._on_add_assignment = on_add_assignment
+        self._on_remove_assignment = on_remove_assignment
         self._project = None
 
         ttk.Label(self, text="Mixer", font=("", 10, "bold"),
@@ -146,6 +154,51 @@ class Mixer(ttk.Frame):
             self._strip_widgets[track.id]["frame"].pack(
                 side="left", fill="y", padx=4, pady=4)
         self.refresh()
+
+    def _build_modulators(self, parent, track) -> None:
+        """Build modulator list for a track.
+
+        Each row: name, assignment count, Edit (curve), +Assign, delete.
+        Plus an "Add modulator..." button.
+        """
+        for mi, mod in enumerate(track.modulators):
+            row = ttk.Frame(parent)
+            row.pack(fill="x", pady=2)
+            ttk.Label(row, text=mod.name, font=("", 8, "bold"),
+                      width=16).pack(side="left")
+            n_assign = len(mod.assignments)
+            ttk.Label(row, text=f"{n_assign} targets",
+                      font=("", 7), foreground="#8b949e",
+                      width=10).pack(side="left", padx=2)
+            ttk.Button(row, text="Curve", width=6,
+                       command=lambda t=track, i=mi: self._on_edit_modulator(t.id, i)
+                       if self._on_edit_modulator else None
+                       ).pack(side="left", padx=2)
+            ttk.Button(row, text="+Assign", width=8,
+                       command=lambda t=track, i=mi: self._on_add_assignment(t.id, i)
+                       if self._on_add_assignment else None
+                       ).pack(side="left", padx=2)
+            ttk.Button(row, text="x", width=3,
+                       command=lambda t=track, i=mi: self._on_remove_modulator(t.id, i)
+                       if self._on_remove_modulator else None
+                       ).pack(side="right")
+            # Assignment rows (compact)
+            for ai, a in enumerate(mod.assignments):
+                arow = ttk.Frame(parent)
+                arow.pack(fill="x", padx=(16, 0), pady=1)
+                tgt = f"{'FX' if a.target_kind == 'fx' else 'Gen'} {a.target_index}"
+                ttk.Label(arow, text=f"-> {tgt} p{a.param_id}",
+                          font=("", 7), foreground="#8b949e").pack(side="left")
+                ttk.Label(arow, text=f"{a.polarity} {a.amount:.2f}",
+                          font=("", 7), foreground="#8b949e").pack(side="left", padx=4)
+                ttk.Button(arow, text="x", width=2,
+                           command=lambda t=track, mi=mi, ai=ai: self._on_remove_assignment(t.id, mi, ai)
+                           if self._on_remove_assignment else None
+                           ).pack(side="right")
+        ttk.Button(parent, text="Add modulator...",
+                   command=lambda t=track: self._on_add_modulator(t.id)
+                   if self._on_add_modulator else None
+                   ).pack(anchor="w", pady=(4, 0))
 
     def _build_sends(self, parent, track) -> None:
         """Build send controls for a track (one row per send + Add button).
@@ -699,6 +752,11 @@ class Mixer(ttk.Frame):
                    command=lambda t=track: self._on_load_track_preset(t.id)
                    if self._on_load_track_preset else None
                    ).pack(side="left", padx=2)
+
+        # Modulators (MSEG): per-track tempo-synced envelopes -> plugin params.
+        mod_frame = ttk.LabelFrame(strip, text="Modulators", padding=4)
+        mod_frame.pack(fill="x", pady=(6, 0))
+        self._build_modulators(mod_frame, track)
 
         # Sends (post-fader, post-FX -- FL normal send behavior).
         sends_frame = ttk.LabelFrame(strip, text="Sends", padding=4)

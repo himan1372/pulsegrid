@@ -605,6 +605,10 @@ pub struct TrackData {
     pub generator_layers: Vec<GeneratorLayerParams>,
     /// How note events fan out across layers.
     pub layer_mode: LayerMode,
+    /// Track modulators (MSEG): per-track, tempo-synced, evaluated per
+    /// block. Unlike automation, modulators live on the track and can
+    /// target many parameters at once.
+    pub modulators: Vec<ModulatorSpec>,
     /// Sends: tapped from the source (pre-fader or post-FX per send) and
     /// mixed into the destination buffer BEFORE its FX chain (LMMS order).
     pub sends: Vec<SendData>,
@@ -658,6 +662,36 @@ pub struct GeneratorParams {
     pub state: Option<Vec<u8>>,
     /// True for VST3 instruments, false for CLAP.
     pub is_vst3: bool,
+}
+
+/// A track modulator specification (MSEG).
+/// Modulators are per-track, tempo-synced, and evaluated every audio
+/// block — unlike timeline automation which is per-parameter and bound
+/// to song position.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModulatorSpec {
+    pub id: String,
+    pub name: String,
+    /// (time_beats, value 0..1) sorted by time.
+    pub nodes: Vec<(f64, f64)>,
+    pub loop_enabled: bool,
+    pub length_bars: f64,
+    pub rate_mult: f64,
+    pub assignments: Vec<ModAssignmentSpec>,
+}
+
+/// One modulator -> parameter routing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModAssignmentSpec {
+    /// "fx" or "gen"
+    pub target_kind: String,
+    pub target_index: usize,
+    pub param_id: u32,
+    pub amount: f64,
+    /// "positive", "negative", or "bipolar"
+    pub polarity: String,
+    pub param_min: f64,
+    pub param_max: f64,
 }
 
 /// How a track's generator layers respond to note events (FL Layer-style).
@@ -744,6 +778,8 @@ pub struct Song {
     pub track_sends: Vec<Vec<SendData>>,
     /// Per-track exclusive output routes (None = Master).
     pub track_outputs: Vec<Option<usize>>,
+    /// Per-track modulators (MSEG).
+    pub track_modulators: Vec<Vec<ModulatorSpec>>,
 }
 
 impl Song {
@@ -1161,6 +1197,7 @@ impl Song {
         let track_layer_modes = arr.tracks.iter().map(|t| t.layer_mode).collect();
         let track_sends = arr.tracks.iter().map(|t| t.sends.clone()).collect();
         let track_outputs = arr.tracks.iter().map(|t| t.output).collect();
+        let track_modulators = arr.tracks.iter().map(|t| t.modulators.clone()).collect();
 
         Ok(Song {
             sample_rate,
@@ -1174,6 +1211,7 @@ impl Song {
             track_layer_modes,
             track_sends,
             track_outputs,
+            track_modulators,
             automation,
         })
     }
@@ -1253,6 +1291,7 @@ mod tests {
                 automation: Vec::new(),
                 generator_layers: Vec::new(),
                 layer_mode: LayerMode::All,
+            modulators: vec![],
                 sends: Vec::new(),
                 output: None,
             }],

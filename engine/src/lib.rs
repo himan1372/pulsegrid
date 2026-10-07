@@ -10,6 +10,7 @@ mod debug;
 mod effects;
 mod engine;
 mod graph;
+mod modulators;
 mod plugins;
 mod sample;
 mod synth;
@@ -719,6 +720,7 @@ fn parse_arrangement(
                     Some(id) => track_ids.iter().position(|tid| tid == id),
                 }
             },
+            modulators: parse_modulators(t.get_item("modulators")?)?,
         });
     }
 
@@ -726,6 +728,125 @@ fn parse_arrangement(
     let data = Engine::make_arrangement(tempo, truncate_notes, patterns, tracks, sample_ids)
         .map_err(PyValueError::new_err)?;
     Ok((data, sample_refs))
+}
+
+/// Parse a track's modulators list.
+fn parse_modulators(mods: Option<Bound<'_, PyAny>>) -> PyResult<Vec<engine::RawModulator>> {
+    let Some(mods) = mods else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for m in mods.iter()? {
+        let m = m?;
+        let m: Bound<'_, PyDict> = m.extract()
+            .map_err(|_| PyValueError::new_err("'modulators' entries must be objects"))?;
+
+        let get_str = |key: &str, default: &str| -> PyResult<String> {
+            m.get_item(key)?
+                .map(|v| v.extract::<String>())
+                .transpose()
+                .map_err(|_| PyValueError::new_err(format!("'modulators.{key}' must be a string")))?
+                .map(Ok)
+                .unwrap_or_else(|| Ok(default.to_string()))
+        };
+        let get_f64 = |key: &str, default: f64| -> PyResult<f64> {
+            Ok(m.get_item(key)?
+                .map(|v| v.extract::<f64>())
+                .transpose()
+                .map_err(|_| PyValueError::new_err(format!("'modulators.{key}' must be a number")))?
+                .unwrap_or(default))
+        };
+
+        let id = get_str("id", "")?;
+        let name = get_str("name", "Modulator")?;
+        let loop_enabled = m.get_item("loop_enabled")?
+            .map(|v| v.extract::<bool>())
+            .transpose()
+            .map_err(|_| PyValueError::new_err("'modulators.loop_enabled' must be a bool"))?
+            .unwrap_or(true);
+        let length_bars = get_f64("length_bars", 1.0)?;
+        let rate_mult = get_f64("rate_mult", 1.0)?;
+
+        // Nodes: [[time_beats, value], ...]
+        let mut nodes = Vec::new();
+        if let Some(nl) = m.get_item("nodes")? {
+            for n in nl.iter()? {
+                let n = n?;
+                let pair: Vec<f64> = n.extract()
+                    .map_err(|_| PyValueError::new_err("'modulators.nodes' entries must be [time, value] pairs"))?;
+                if pair.len() != 2 {
+                    return Err(PyValueError::new_err("'modulators.nodes' entries must be [time, value] pairs"));
+                }
+                nodes.push((pair[0], pair[1].clamp(0.0, 1.0)));
+            }
+            nodes.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        }
+
+        // Assignments
+        let mut assignments = Vec::new();
+        if let Some(al) = m.get_item("assignments")? {
+            for a in al.iter()? {
+                let a = a?;
+                let a: Bound<'_, PyDict> = a.extract()
+                    .map_err(|_| PyValueError::new_err("'modulators.assignments' entries must be objects"))?;
+                let target_kind: String = a.get_item("target_kind")?
+                    .map(|v| v.extract::<String>())
+                    .transpose()
+                    .map_err(|_| PyValueError::new_err("'assignment.target_kind' must be a string"))?
+                    .unwrap_or_else(|| "fx".to_string());
+                let target_index: usize = a.get_item("target_index")?
+                    .map(|v| v.extract::<usize>())
+                    .transpose()
+                    .map_err(|_| PyValueError::new_err("'assignment.target_index' must be an integer"))?
+                    .unwrap_or(0);
+                let param_id: u32 = a.get_item("param_id")?
+                    .map(|v| v.extract::<u32>())
+                    .transpose()
+                    .map_err(|_| PyValueError::new_err("'assignment.param_id' must be an integer"))?
+                    .unwrap_or(0);
+                let amount: f64 = a.get_item("amount")?
+                    .map(|v| v.extract::<f64>())
+                    .transpose()
+                    .map_err(|_| PyValueError::new_err("'assignment.amount' must be a number"))?
+                    .unwrap_or(0.5);
+                let polarity: String = a.get_item("polarity")?
+                    .map(|v| v.extract::<String>())
+                    .transpose()
+                    .map_err(|_| PyValueError::new_err("'assignment.polarity' must be a string"))?
+                    .unwrap_or_else(|| "positive".to_string());
+                let param_min: f64 = a.get_item("param_min")?
+                    .map(|v| v.extract::<f64>())
+                    .transpose()
+                    .map_err(|_| PyValueError::new_err("'assignment.param_min' must be a number"))?
+                    .unwrap_or(0.0);
+                let param_max: f64 = a.get_item("param_max")?
+                    .map(|v| v.extract::<f64>())
+                    .transpose()
+                    .map_err(|_| PyValueError::new_err("'assignment.param_max' must be a number"))?
+                    .unwrap_or(1.0);
+                assignments.push(engine::RawModAssignment {
+                    is_fx: target_kind == "fx",
+                    target_index,
+                    param_id,
+                    amount: amount.clamp(0.0, 1.0),
+                    polarity,
+                    param_min,
+                    param_max,
+                });
+            }
+        }
+
+        out.push(engine::RawModulator {
+            id,
+            name,
+            nodes,
+            loop_enabled,
+            length_bars: length_bars.max(0.0625),
+            rate_mult: rate_mult.max(0.0625),
+            assignments,
+        });
+    }
+    Ok(out)
 }
 
 /// Optional float field, defaulting to 0.0 when absent or mistyped.

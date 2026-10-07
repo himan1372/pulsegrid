@@ -141,6 +141,7 @@ class EngineBridge:
                     "generator_layers": [l.engine_params()
                                          for l in t.generator_layers],
                     "layer_mode": t.layer_mode,
+                    "modulators": [m.engine_params() for m in t.modulators],
                     "clips": [
                         {
                             "pattern": index_of[c.pattern_id],

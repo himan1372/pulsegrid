@@ -22,7 +22,7 @@ use crate::graph::{Graph, MAX_BLOCK_FRAMES};
 use crate::synth::Instrument;
 use crate::timeline::{
     ArrangementData, ChannelData, ClipData, GeneratorLayerParams, GeneratorParams, LayerMode,
-    NoteData, PatternData, RawAutoCurve, SendData, Song, TrackData,
+    ModAssignmentSpec, ModulatorSpec, NoteData, PatternData, RawAutoCurve, SendData, Song, TrackData,
 };
 use crate::wav;
 
@@ -78,6 +78,7 @@ impl AudioCore {
             &initial.track_fx,
             &initial.track_generator_layers,
             &initial.track_layer_modes,
+            &initial.track_modulators,
             &initial.automation,
             &initial.track_sends,
             &initial.track_outputs,
@@ -150,6 +151,7 @@ impl AudioCore {
                         &new_song.track_fx,
                         &new_song.track_generator_layers,
                         &new_song.track_layer_modes,
+                        &new_song.track_modulators,
                         &new_song.automation,
                         &new_song.track_sends,
                         &new_song.track_outputs,
@@ -332,6 +334,7 @@ impl Engine {
                 automation: Vec::new(),
                 generator_layers: Vec::new(),
                 layer_mode: LayerMode::All,
+            modulators: vec![],
                 sends: Vec::new(),
                 output: None,
             }],
@@ -831,6 +834,7 @@ impl Engine {
             &self.song.track_fx,
             &self.song.track_generator_layers,
             &self.song.track_layer_modes,
+            &self.song.track_modulators,
             &self.song.automation,
             &self.song.track_sends,
             &self.song.track_outputs,
@@ -1161,6 +1165,23 @@ impl Engine {
                     "sequential" => LayerMode::Sequential,
                     _ => LayerMode::All,
                 },
+                modulators: rt.modulators.into_iter().map(|m| ModulatorSpec {
+                    id: m.id,
+                    name: m.name,
+                    nodes: m.nodes,
+                    loop_enabled: m.loop_enabled,
+                    length_bars: m.length_bars,
+                    rate_mult: m.rate_mult,
+                    assignments: m.assignments.into_iter().map(|a| ModAssignmentSpec {
+                        target_kind: if a.is_fx { "fx".to_string() } else { "gen".to_string() },
+                        target_index: a.target_index,
+                        param_id: a.param_id,
+                        amount: a.amount,
+                        polarity: a.polarity,
+                        param_min: a.param_min,
+                        param_max: a.param_max,
+                    }).collect(),
+                }).collect(),
                 sends: rt.sends,
                 output: rt.output,
             });
@@ -1239,6 +1260,31 @@ pub struct RawTrack {
     pub sends: Vec<SendData>,
     /// Exclusive output route: track index, or None for Master.
     pub output: Option<usize>,
+    pub modulators: Vec<RawModulator>,
+}
+
+/// Raw modulator from the bridge.
+#[derive(Clone, Debug)]
+pub struct RawModulator {
+    pub id: String,
+    pub name: String,
+    pub nodes: Vec<(f64, f64)>,
+    pub loop_enabled: bool,
+    pub length_bars: f64,
+    pub rate_mult: f64,
+    pub assignments: Vec<RawModAssignment>,
+}
+
+/// Raw modulation assignment from the bridge.
+#[derive(Clone, Debug)]
+pub struct RawModAssignment {
+    pub is_fx: bool,
+    pub target_index: usize,
+    pub param_id: u32,
+    pub amount: f64,
+    pub polarity: String,
+    pub param_min: f64,
+    pub param_max: f64,
 }
 
 /// Raw generator layer from the bridge.

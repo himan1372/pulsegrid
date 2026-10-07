@@ -16,13 +16,14 @@
 
 use std::f32::consts::PI;
 
-use crate::effects::{Effect, FxParams};
 use crate::debug::{DebugEvent, DebugEventKind, SharedDebugState};
+use crate::effects::{Effect, FxParams};
+use crate::modulators::{ModAssignment, ModPolarity, ModTarget, ModulatorParams, ModulatorState, MsegNode};
 use crate::plugins::{HostedClapInstrument, InstrumentNoteEvent};
 use crate::synth::{Instrument, Voice};
 use crate::timeline::{
     AudioClipEvent, AutoCurve, AutoParam, GeneratorLayerParams, LayerMode,
-    SendData, SendTap, TrackEvent, TrackParams,
+    ModulatorSpec, SendData, SendTap, TrackEvent, TrackParams,
 };
 use crate::vst3::{HostedVst3Instrument, Vst3NoteEvent};
 
@@ -204,6 +205,8 @@ struct TrackStrip {
     /// Cached voice count for Smart Disable (set in render(), read in
     /// should_skip_fx() after sends are applied).
     cached_voice_count: u32,
+    /// Track modulators (MSEG). Evaluated per block in render().
+    modulators: Vec<ModulatorState>,
 }
 
 /// One sounding audio clip: a playhead into a shared [`SampleBuffer`].
@@ -245,6 +248,80 @@ const SILENT_BLOCKS_TO_DISABLE: u32 = 16;
 /// Peak threshold below which a block counts as silent.
 const SILENCE_THRESHOLD: f32 = 1e-6;
 
+/// Build runtime modulator states from specs, capturing base parameter
+/// values from the FX and generator layer params.
+fn build_modulators(
+    specs: &[ModulatorSpec],
+    fx_params: &[FxParams],
+    layers: &[GeneratorLayerParams],
+) -> Vec<ModulatorState> {
+    specs
+        .iter()
+        .map(|spec| {
+            let assignments: Vec<ModAssignment> = spec
+                .assignments
+                .iter()
+                .map(|a| {
+                    let target = if a.target_kind == "fx" {
+                        ModTarget::Fx(a.target_index)
+                    } else {
+                        ModTarget::Gen(a.target_index)
+                    };
+                    let polarity = match a.polarity.as_str() {
+                        "negative" => ModPolarity::Negative,
+                        "bipolar" => ModPolarity::Bipolar,
+                        _ => ModPolarity::Positive,
+                    };
+                    ModAssignment {
+                        target,
+                        param_id: a.param_id,
+                        amount: a.amount,
+                        polarity,
+                        param_min: a.param_min,
+                        param_max: a.param_max,
+                    }
+                })
+                .collect();
+            // Capture base values.
+            let bases: Vec<f64> = spec
+                .assignments
+                .iter()
+                .map(|a| {
+                    if a.target_kind == "fx" {
+                        fx_params.get(a.target_index).and_then(|fp| match fp {
+                            FxParams::Plugin { params, .. }
+                            | FxParams::Vst3Plugin { params, .. } => params
+                                .iter()
+                                .find(|(id, _)| *id == a.param_id)
+                                .map(|(_, v)| *v),
+                            _ => None,
+                        }).unwrap_or((a.param_min + a.param_max) / 2.0)
+                    } else {
+                        layers.get(a.target_index).and_then(|l| {
+                            l.generator.params.iter()
+                                .find(|(id, _)| *id == a.param_id)
+                                .map(|(_, v)| *v)
+                        }).unwrap_or((a.param_min + a.param_max) / 2.0)
+                    }
+                })
+                .collect();
+            let params = ModulatorParams {
+                id: spec.id.clone(),
+                name: spec.name.clone(),
+                nodes: spec.nodes.iter().map(|(t, v)| MsegNode {
+                    time_beats: *t,
+                    value: *v,
+                }).collect(),
+                loop_enabled: spec.loop_enabled,
+                length_bars: spec.length_bars,
+                rate_mult: spec.rate_mult,
+                assignments,
+            };
+            ModulatorState::new(params, bases)
+        })
+        .collect()
+}
+
 impl TrackStrip {
     fn new(
         sample_rate: u32,
@@ -252,6 +329,7 @@ impl TrackStrip {
         fx_params: &[FxParams],
         layers: &[GeneratorLayerParams],
         layer_mode: LayerMode,
+        modulators: &[ModulatorSpec],
         track_idx: usize,
         debug: SharedDebugState,
         sink: &mut crate::plugins::PluginInstanceSink,
@@ -341,6 +419,7 @@ impl TrackStrip {
             debug,
             silent_blocks: 0,
             cached_voice_count: 0,
+            modulators: build_modulators(modulators, fx_params, layers),
         }
     }
 
@@ -482,6 +561,38 @@ impl TrackStrip {
     /// path, i.e. pre-fader: clip gain/pan are per-instance (FL Clip
     /// Properties), and the track's gain/pan/FX then apply to the mix of
     /// notes and clips exactly like FL Studio's channel strip.
+    /// Evaluate modulators for one block and apply to target parameters.
+    /// Call at the start of each block, before rendering audio.
+    fn eval_modulators(&mut self, block_beats: f64) {
+        if self.modulators.is_empty() {
+            return;
+        }
+        // Collect (target, param_id, value) to apply after borrow ends.
+        let mut updates: Vec<(ModTarget, u32, f64)> = Vec::new();
+        for m in self.modulators.iter_mut() {
+            let v = m.advance(block_beats);
+            for (ai, a) in m.assignments().iter().enumerate() {
+                if let Some(final_v) = m.apply(ai, v) {
+                    updates.push((a.target, a.param_id, final_v));
+                }
+            }
+        }
+        for (target, param_id, value) in updates {
+            match target {
+                ModTarget::Fx(idx) => {
+                    if let Some(fx) = self.fx.get_mut(idx) {
+                        fx.queue_plugin_param(param_id, value);
+                    }
+                }
+                ModTarget::Gen(idx) => {
+                    if let Some(layer) = self.generator_layers.get_mut(idx) {
+                        layer.plugin.queue_param(param_id, value);
+                    }
+                }
+            }
+        }
+    }
+
     fn render(
         &mut self,
         events: &[TrackEvent],
@@ -1285,6 +1396,7 @@ impl Graph {
         track_fx: &[Vec<FxParams>],
         track_layers: &[Vec<GeneratorLayerParams>],
         track_layer_modes: &[LayerMode],
+        track_modulators: &[Vec<ModulatorSpec>],
         automation: &[Vec<AutoCurve>],
         sends: &[Vec<SendData>],
         outputs: &[Option<usize>],
@@ -1298,9 +1410,10 @@ impl Graph {
             .zip(track_fx.iter())
             .zip(track_layers.iter())
             .zip(track_layer_modes.iter())
+            .zip(track_modulators.iter())
             .enumerate()
-            .map(|(i, (((p, fx), layers), mode))| {
-                TrackStrip::new(sample_rate, *p, fx, layers, *mode, i, debug.clone(), sink)
+            .map(|(i, ((((p, fx), layers), mode), mods))| {
+                TrackStrip::new(sample_rate, *p, fx, layers, *mode, mods, i, debug.clone(), sink)
             })
             .collect::<Vec<_>>();
         let n_tracks = strips.len();
@@ -1596,6 +1709,8 @@ impl Graph {
         // (~11 ms granularity at 512 frames / 44.1 kHz — plenty smooth for
         // mix moves, and cheap enough to never threaten the audio thread).
         let beat = (abs_start as f64 / self.samples_per_beat) % self.loop_beats;
+        // Modulators are evaluated per block like automation (tempo-synced).
+        let block_beats = frames as f64 / self.samples_per_beat;
 
         let n = frames * 2;
         for x in self.mix_buf[..n].iter_mut() {
@@ -1634,6 +1749,7 @@ impl Graph {
                 .enumerate()
                 .for_each(|(idx, (((strip, buf), tap), align))| {
                     strip.apply_automation(&automation[idx], beat);
+                    strip.eval_modulators(block_beats);
                     strip.render(
                         &track_events[idx],
                         &track_audio_clips[idx],
@@ -1649,6 +1765,7 @@ impl Graph {
         } else {
             for (idx, strip) in self.strips.iter_mut().enumerate() {
                 strip.apply_automation(&automation[idx], beat);
+                strip.eval_modulators(block_beats);
                 let buf = &mut self.send_bufs[idx][..n];
                 strip.render(
                     &track_events[idx],
@@ -1861,7 +1978,7 @@ mod tests {
 
     #[test]
     fn hard_pan_routes_to_one_side() {
-        let mut g = Graph::new(44100, &[tp(1.0, -1.0)], &[vec![]], &[vec![]], &[LayerMode::All], &[vec![]], &[vec![]], &[None], 120.0, 44100 * 4, debug_state(), &mut crate::plugins::PluginInstanceSink::for_tests());
+        let mut g = Graph::new(44100, &[tp(1.0, -1.0)], &[vec![]], &[vec![]], &[LayerMode::All], &[vec![]], &[vec![]], &[vec![]], &[None], 120.0, 44100 * 4, debug_state(), &mut crate::plugins::PluginInstanceSink::for_tests());
         let events = vec![vec![TrackEvent {
             sample: 0,
             len_samples: 4410,
@@ -1886,6 +2003,7 @@ mod tests {
             &[vec![], vec![]],
             &[vec![], vec![]],
             &[LayerMode::All, LayerMode::All],
+            &[vec![], vec![]],
             &[vec![], vec![]],
             &[vec![], vec![]],
             &[None, None],
@@ -1938,6 +2056,7 @@ mod tests {
                 &[LayerMode::All, LayerMode::All],
                 &[vec![], vec![]],
                 &[vec![], vec![]],
+                &[vec![], vec![]],
                 &[None, None],
                 120.0,
                 44100 * 4,
@@ -1977,6 +2096,7 @@ mod tests {
             &[vec![]],
             &[vec![]],
             &[LayerMode::All],
+            &[vec![]],
             &auto_gain(vec![(0.0, 0.0), (8.0, 2.0)]),
             &[vec![]],
             &[None],
@@ -2017,6 +2137,7 @@ mod tests {
                 &[vec![]],
                 &[vec![]],
                 &[LayerMode::All],
+                &[vec![]],
                 &[vec![]],
                 &[vec![]],
                 &[None],
@@ -2077,6 +2198,7 @@ mod tests {
             &[fx],
             &[vec![]],
             &[LayerMode::All],
+            &[vec![]],
             &[vec![AutoCurve {
                 param: AutoParam::Fx { index: 0, param: FxParamId::FilterCutoff },
                 points: vec![(0.0, 200.0), (8.0, 18000.0)],
@@ -2148,10 +2270,11 @@ mod tests {
         let nofx: Vec<Vec<crate::effects::FxParams>> = vec![vec![], vec![]];
         let layers = [vec![], vec![]];
         let modes = [LayerMode::All, LayerMode::All];
+        let no_mods: [Vec<crate::timeline::ModulatorSpec>; 2] = [vec![], vec![]];
         let auto = [vec![], vec![]];
         // Parallel send: source -> master AND source -> bus (amount 1.0).
         let mut g_send = Graph::new(
-            44100, &tps, &nofx, &layers, &modes, &auto,
+            44100, &tps, &nofx, &layers, &modes, &no_mods, &auto,
             &[vec![crate::timeline::SendData {
                 to_track: 1,
                 amount: 1.0,
@@ -2166,7 +2289,7 @@ mod tests {
         );
         // Exclusive route: source -> bus ONLY.
         let mut g_route = Graph::new(
-            44100, &tps, &nofx, &layers, &modes, &auto,
+            44100, &tps, &nofx, &layers, &modes, &no_mods, &auto,
             &[vec![], vec![]],
             &[Some(1), None],
             120.0, loop_samples, debug_state(),
@@ -2203,15 +2326,16 @@ mod tests {
         }]];
         let layers = [vec![], vec![]];
         let modes = [LayerMode::All, LayerMode::All];
+        let no_mods: [Vec<crate::timeline::ModulatorSpec>; 2] = [vec![], vec![]];
         let auto = [vec![], vec![]];
         let sends: Vec<Vec<crate::timeline::SendData>> = vec![vec![], vec![]];
         let mut g_direct = Graph::new(
-            44100, &tps, &dark_fx, &layers, &modes, &auto, &sends,
+            44100, &tps, &dark_fx, &layers, &modes, &no_mods, &auto, &sends,
             &[None, None], 120.0, loop_samples, debug_state(),
             &mut crate::plugins::PluginInstanceSink::for_tests(),
         );
         let mut g_routed = Graph::new(
-            44100, &tps, &dark_fx, &layers, &modes, &auto, &sends,
+            44100, &tps, &dark_fx, &layers, &modes, &no_mods, &auto, &sends,
             &[Some(1), None], 120.0, loop_samples, debug_state(),
             &mut crate::plugins::PluginInstanceSink::for_tests(),
         );
@@ -2272,6 +2396,7 @@ mod tests {
         let nofx: Vec<Vec<crate::effects::FxParams>> = vec![vec![], vec![]];
         let layers = [vec![], vec![]];
         let modes = [LayerMode::All, LayerMode::All];
+        let no_mods: [Vec<crate::timeline::ModulatorSpec>; 2] = [vec![], vec![]];
         let auto = [vec![], vec![]];
         let outputs = [None, None];
         let mut mk = |tap| {
@@ -2281,6 +2406,7 @@ mod tests {
                 &nofx,
                 &layers,
                 &modes,
+                &no_mods,
                 &auto,
                 &[vec![send_edge(1, 1.0, tap, 0.0, false)], vec![]],
                 &outputs,
@@ -2315,6 +2441,7 @@ mod tests {
         let nofx: Vec<Vec<crate::effects::FxParams>> = vec![vec![], vec![]];
         let layers = [vec![], vec![]];
         let modes = [LayerMode::All, LayerMode::All];
+        let no_mods: [Vec<crate::timeline::ModulatorSpec>; 2] = [vec![], vec![]];
         let auto = [vec![], vec![]];
         let mut g = Graph::new(
             44100,
@@ -2322,6 +2449,7 @@ mod tests {
             &nofx,
             &layers,
             &modes,
+            &no_mods,
             &auto,
             &[vec![send_edge(
                 1,
@@ -2363,6 +2491,7 @@ mod tests {
         let nofx: Vec<Vec<crate::effects::FxParams>> = vec![vec![], vec![]];
         let layers = [vec![], vec![]];
         let modes = [LayerMode::All, LayerMode::All];
+        let no_mods: [Vec<crate::timeline::ModulatorSpec>; 2] = [vec![], vec![]];
         let outputs = [None, None];
         let sends =
             [vec![send_edge(1, 1.0, crate::timeline::SendTap::Pre, 0.0, false)], vec![]];
@@ -2378,7 +2507,7 @@ mod tests {
         let auto_flat: [Vec<crate::timeline::AutoCurve>; 2] = [vec![], vec![]];
         // Beat 0: amount 0 -> silent.
         let mut g_a = Graph::new(
-            44100, &tps, &nofx, &layers, &modes, &auto_ramp, &sends,
+            44100, &tps, &nofx, &layers, &modes, &no_mods, &auto_ramp, &sends,
             &outputs, 120.0, loop_samples, debug_state(), &mut crate::plugins::PluginInstanceSink::for_tests(),
         );
         let mut out_a = vec![0.0f32; 2048 * 2];
@@ -2386,7 +2515,7 @@ mod tests {
         let peak_a = out_a.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
         // Beat 4: amount ~0.5 -> audible.
         let mut g_b = Graph::new(
-            44100, &tps, &nofx, &layers, &modes, &auto_ramp, &sends,
+            44100, &tps, &nofx, &layers, &modes, &no_mods, &auto_ramp, &sends,
             &outputs, 120.0, loop_samples, debug_state(), &mut crate::plugins::PluginInstanceSink::for_tests(),
         );
         let mut out_b = vec![0.0f32; 2048 * 2];
@@ -2394,7 +2523,7 @@ mod tests {
         let peak_b = out_b.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
         // Static amount 1.0 at beat 4: twice as loud as the automated 0.5.
         let mut g_c = Graph::new(
-            44100, &tps, &nofx, &layers, &modes, &auto_flat, &sends,
+            44100, &tps, &nofx, &layers, &modes, &no_mods, &auto_flat, &sends,
             &outputs, 120.0, loop_samples, debug_state(), &mut crate::plugins::PluginInstanceSink::for_tests(),
         );
         let mut out_c = vec![0.0f32; 2048 * 2];
@@ -2418,6 +2547,7 @@ mod tests {
         let nofx: Vec<Vec<crate::effects::FxParams>> = vec![vec![], vec![]];
         let layers = [vec![], vec![]];
         let modes = [LayerMode::All, LayerMode::All];
+        let no_mods: [Vec<crate::timeline::ModulatorSpec>; 2] = [vec![], vec![]];
         let auto = [vec![], vec![]];
         let outputs = [None, None];
         let mut mk = |sidechain| {
@@ -2427,6 +2557,7 @@ mod tests {
                 &nofx,
                 &layers,
                 &modes,
+                &no_mods,
                 &auto,
                 &[vec![send_edge(
                     1,
@@ -2484,6 +2615,7 @@ mod tests {
         ];
         let layers = [vec![], vec![]];
         let modes = [LayerMode::All, LayerMode::All];
+        let no_mods: [Vec<crate::timeline::ModulatorSpec>; 2] = [vec![], vec![]];
         let auto = [vec![], vec![]];
         let outputs = [None, None];
         let mut mk = |sidechain| {
@@ -2493,6 +2625,7 @@ mod tests {
                 &ducker_fx,
                 &layers,
                 &modes,
+                &no_mods,
                 &auto,
                 &[vec![send_edge(
                     1,
@@ -2727,6 +2860,7 @@ mod tests {
         let fx = vec![vec![], bass_fx];
         let layers = [vec![], vec![]];
         let modes = [LayerMode::All, LayerMode::All];
+        let no_mods: [Vec<crate::timeline::ModulatorSpec>; 2] = [vec![], vec![]];
         let auto = [vec![], vec![]];
         Graph::new(
             44100,
@@ -2734,6 +2868,7 @@ mod tests {
             &fx,
             &layers,
             &modes,
+            &no_mods,
             &auto,
             &[vec![send_edge(
                 1,
@@ -2828,6 +2963,7 @@ mod tests {
         ];
         let layers = [vec![], vec![], vec![]];
         let modes = [LayerMode::All, LayerMode::All, LayerMode::All];
+        let no_mods: [Vec<crate::timeline::ModulatorSpec>; 3] = [vec![], vec![], vec![]];
         let auto = [vec![], vec![], vec![]];
         // Track 2 (2112 latent) ->aud-> track 0 (kick) ->sc(pre)-> track 1.
         let sends = vec![
@@ -2847,6 +2983,7 @@ mod tests {
             &fx,
             &layers,
             &modes,
+            &no_mods,
             &auto,
             &sends,
             &[None, None, None],
@@ -2909,10 +3046,11 @@ mod tests {
         let nofx = [Vec::new()];
         let layers = [Vec::new()];
         let modes = [LayerMode::All];
+        let no_mods: [Vec<crate::timeline::ModulatorSpec>; 1] = [vec![]];
         let auto = [Vec::new()];
         let sends: [Vec<crate::timeline::SendData>; 1] = [Vec::new()];
         let mut g = Graph::new(
-            44100, &tps, &nofx, &layers, &modes, &auto, &sends, &[None],
+            44100, &tps, &nofx, &layers, &modes, &no_mods, &auto, &sends, &[None],
             120.0, loop_samples, debug_state(), &mut crate::plugins::PluginInstanceSink::for_tests(),
         );
         let mut out = vec![0.0f32; 8192 * 2];
@@ -3005,10 +3143,11 @@ mod tests {
         let nofx = [Vec::new()];
         let layers = [Vec::new()];
         let modes = [LayerMode::All];
+        let no_mods: [Vec<crate::timeline::ModulatorSpec>; 1] = [vec![]];
         let auto = [Vec::new()];
         let sends: [Vec<crate::timeline::SendData>; 1] = [Vec::new()];
         let mut g = Graph::new(
-            44100, &tps, &nofx, &layers, &modes, &auto, &sends, &[None],
+            44100, &tps, &nofx, &layers, &modes, &no_mods, &auto, &sends, &[None],
             120.0, loop_samples, debug_state(), &mut crate::plugins::PluginInstanceSink::for_tests(),
         );
         let mut out = vec![0.0f32; 8192 * 2];
@@ -3116,10 +3255,11 @@ mod tests {
             let nofx = [Vec::new()];
             let layers = [Vec::new()];
             let modes = [LayerMode::All];
+            let no_mods: [Vec<crate::timeline::ModulatorSpec>; 1] = [vec![]];
             let auto = [Vec::new()];
             let sends: [Vec<crate::timeline::SendData>; 1] = [Vec::new()];
             let mut g = Graph::new(
-                44100, &tps, &nofx, &layers, &modes, &auto, &sends,
+                44100, &tps, &nofx, &layers, &modes, &no_mods, &auto, &sends,
                 &[None], 120.0, loop_samples, debug_state(),
                 &mut crate::plugins::PluginInstanceSink::for_tests(),
             );
@@ -3176,6 +3316,7 @@ mod tests {
             &[vec![]],
             &[vec![]],
             &[LayerMode::All],
+            &[vec![]],
             &[vec![]],
             &[vec![]],
             &[None],
